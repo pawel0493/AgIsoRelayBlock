@@ -159,15 +159,6 @@ esp_err_t relay_post_handler(httpd_req_t* req) {
         if (httpd_query_key_value(query, "ch", value, sizeof(value)) == ESP_OK) {
             channel = atoi(value);
         }
-
-        esp_err_t aux_clear_post_handler(httpd_req_t* req) {
-            if (iso::vt_app::clear_preferred_aux_assignments()) {
-                ESP_LOGI(kTag, "web: cleared persisted preferred AUX-N assignments");
-                return httpd_resp_send(req, "OK", HTTPD_RESP_USE_STRLEN);
-            }
-            httpd_resp_set_status(req, "503 Service Unavailable");
-            return httpd_resp_send(req, "VT not ready or clear failed", HTTPD_RESP_USE_STRLEN);
-        }
         if (httpd_query_key_value(query, "state", value, sizeof(value)) == ESP_OK) {
             state = atoi(value);
         }
@@ -187,6 +178,15 @@ esp_err_t relay_post_handler(httpd_req_t* req) {
     bool ok = iso::vt_app::set_relay_remote(channel, state != 0);
     ESP_LOGI(kTag, "web: relay %d -> %s (%s)", channel, state ? "ON" : "OFF", ok ? "applied" : "refused (DI interlock)");
     return httpd_resp_send(req, "OK", HTTPD_RESP_USE_STRLEN);
+}
+
+esp_err_t aux_clear_post_handler(httpd_req_t* req) {
+    if (iso::vt_app::clear_preferred_aux_assignments()) {
+        ESP_LOGI(kTag, "web: cleared persisted preferred AUX-N assignments");
+        return httpd_resp_send(req, "OK", HTTPD_RESP_USE_STRLEN);
+    }
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    return httpd_resp_send(req, "VT not ready or clear failed", HTTPD_RESP_USE_STRLEN);
 }
 
 // Streams the raw request body directly into the inactive OTA partition

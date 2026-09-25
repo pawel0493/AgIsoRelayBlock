@@ -331,10 +331,16 @@ bool AuxiliaryPreferredAssignmentNVSRepository::clear(std::uint64_t virtualTermi
 		return false;
 	}
 
+	const auto before = records.size();
 	records.erase(std::remove_if(records.begin(), records.end(), [virtualTerminalName](const PersistedAssignmentRecord &record) {
 		return record.virtualTerminalName == virtualTerminalName;
 	}),
 	              records.end());
+
+	if (before == records.size())
+	{
+		return true;
+	}
 
 	return save_all_records(records);
 }

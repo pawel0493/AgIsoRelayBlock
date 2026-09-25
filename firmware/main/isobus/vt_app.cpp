@@ -10,6 +10,7 @@
 #include "io/buzzer_driver.hpp"
 #include "io/relay_driver.hpp"
 #include "isobus/diagnostics.hpp"
+#include "isobus/aux_assignment_nvs.hpp"
 #include "isobus/isobus/can_NAME.hpp"
 #include "isobus/isobus/can_network_manager.hpp"
 #include "isobus/isobus/can_partnered_control_function.hpp"
@@ -31,6 +32,7 @@ constexpr uint8_t kColourBlack = 0;
 
 std::shared_ptr<isobus::VirtualTerminalClient> g_vt_client;
 std::shared_ptr<isobus::PartneredControlFunction> g_vt_partner;
+std::shared_ptr<AuxiliaryPreferredAssignmentNVSRepository> g_aux_preferred_repository;
 
 // "Momentary Override Safety" (docs/vt-ui-design.md): unfilled/off by
 // default, and deliberately never persisted -- always starts false at
@@ -342,6 +344,8 @@ void init(std::shared_ptr<isobus::InternalControlFunction> internal_ecu) {
         isobus::IOPFileInterface::hash_object_pool_to_version(object_pool_iop_start, pool_size);
 
     g_vt_client = std::make_shared<isobus::VirtualTerminalClient>(vt_partner, internal_ecu);
+    g_aux_preferred_repository = std::make_shared<AuxiliaryPreferredAssignmentNVSRepository>();
+    g_vt_client->set_auxiliary_preferred_assignment_repository(g_aux_preferred_repository);
     g_vt_client->set_object_pool(0, object_pool_iop_start, pool_size, pool_version);
     g_vt_client->get_vt_soft_key_event_dispatcher().add_listener(handle_soft_key_event);
     g_vt_client->get_auxiliary_function_event_dispatcher().add_listener(handle_aux_function_event);
@@ -450,6 +454,20 @@ void refresh_wifi_client_count() {
     }
     last_count = count;
     g_vt_client->send_change_string_value(object_pool_ids::kWifiClientsLabel, "Clients: " + std::to_string(count));
+}
+
+bool clear_preferred_aux_assignments() {
+    if (!g_vt_client) {
+        return false;
+    }
+    if (!g_vt_partner || !g_aux_preferred_repository) {
+        return true;
+    }
+    if (!g_vt_partner->get_address_valid()) {
+        return false;
+    }
+    const uint64_t vt_name = g_vt_partner->get_NAME().get_full_name();
+    return g_aux_preferred_repository->clear(vt_name);
 }
 
 }  // namespace iso::vt_app

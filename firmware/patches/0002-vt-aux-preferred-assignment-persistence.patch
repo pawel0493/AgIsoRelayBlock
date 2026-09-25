@@ -1,0 +1,500 @@
+diff --git a/isobus/include/isobus/isobus/isobus_virtual_terminal_client.hpp b/isobus/include/isobus/isobus/isobus_virtual_terminal_client.hpp
+index 2349a3e..b7e362a 100644
+--- a/isobus/include/isobus/isobus/isobus_virtual_terminal_client.hpp
++++ b/isobus/include/isobus/isobus/isobus_virtual_terminal_client.hpp
+@@ -372,6 +372,43 @@ namespace isobus
+ 			AuxiliaryTypeTwoFunctionType functionType; ///< The type of function
+ 		};
+ 
++		/// @brief A persisted preferred assignment record for an AUX-N function
++		struct PreferredAuxiliaryAssignment
++		{
++			std::uint64_t auxiliaryInputDeviceName = DEFAULT_NAME; ///< The NAME of the auxiliary input device
++			std::uint16_t modelIdentificationCode = 0; ///< The model identification code of the auxiliary input device
++			AssignedAuxiliaryFunction function{ NULL_OBJECT_ID, NULL_OBJECT_ID, AuxiliaryTypeTwoFunctionType::BooleanLatching };
++		};
++
++		/// @brief Storage abstraction for persisted preferred AUX-N assignments
++		class AuxiliaryPreferredAssignmentRepository
++		{
++		public:
++			virtual ~AuxiliaryPreferredAssignmentRepository() = default;
++
++			/// @brief Loads preferred assignments for a specific VT server
++			/// @param[in] virtualTerminalName The VT server NAME
++			/// @returns Any stored preferred assignments for that VT
++			virtual std::vector<PreferredAuxiliaryAssignment> load(std::uint64_t virtualTerminalName) = 0;
++
++			/// @brief Stores or updates one preferred assignment for a specific VT server
++			/// @param[in] virtualTerminalName The VT server NAME
++			/// @param[in] assignment The assignment record to store
++			/// @returns true if storage succeeded
++			virtual bool store(std::uint64_t virtualTerminalName, const PreferredAuxiliaryAssignment &assignment) = 0;
++
++			/// @brief Removes one preferred assignment by function object ID for a specific VT server
++			/// @param[in] virtualTerminalName The VT server NAME
++			/// @param[in] functionObjectID The function object ID to remove
++			/// @returns true if removal succeeded
++			virtual bool remove(std::uint64_t virtualTerminalName, std::uint16_t functionObjectID) = 0;
++
++			/// @brief Removes all preferred assignments for a specific VT server
++			/// @param[in] virtualTerminalName The VT server NAME
++			/// @returns true if removal succeeded
++			virtual bool clear(std::uint64_t virtualTerminalName) = 0;
++		};
++
+ 		/// @brief The constructor for a VirtualTerminalClient
+ 		/// @param[in] partner The VT server control function
+ 		/// @param[in] clientSource The internal control function to communicate from
+@@ -575,6 +612,11 @@ namespace isobus
+ 		/// @param[in] modelIdentificationCode The model identification code
+ 		void set_auxiliary_input_model_identification_code(std::uint16_t modelIdentificationCode);
+ 
++		/// @brief Sets a persistence backend for preferred AUX-N assignments
++		/// @details Passing nullptr disables persistence and keeps existing no-op behavior.
++		/// @param[in] repository A repository implementation or nullptr
++		void set_auxiliary_preferred_assignment_repository(std::shared_ptr<AuxiliaryPreferredAssignmentRepository> repository);
++
+ 		/// @brief Get whether the VT has enabled the learn mode for the auxiliary input
+ 		/// @returns true if the VT has enabled the learn mode for the auxiliary input
+ 		bool get_auxiliary_input_learn_mode_enabled() const;
+@@ -1439,6 +1481,24 @@ namespace isobus
+ 		/// @returns true if the message was sent successfully
+ 		bool send_auxiliary_functions_preferred_assignment() const;
+ 
++		/// @brief Loads preferred assignments for the active VT partner from persistence
++		/// @returns Preferred assignments for the active VT partner
++		std::vector<PreferredAuxiliaryAssignment> load_preferred_auxiliary_assignments_for_active_vt() const;
++
++		/// @brief Merges persisted preferred assignments into runtime assignment state
++		void merge_persisted_preferred_assignments_into_runtime_state();
++
++		/// @brief Persist one preferred assignment if persistence is configured
++		/// @param[in] assignment The assignment to persist
++		void persist_preferred_assignment(const PreferredAuxiliaryAssignment &assignment);
++
++		/// @brief Remove one preferred assignment if persistence is configured
++		/// @param[in] functionObjectID The function object ID to remove
++		void remove_persisted_preferred_assignment(std::uint16_t functionObjectID);
++
++		/// @brief Remove all preferred assignments if persistence is configured
++		void clear_persisted_preferred_assignments();
++
+ 		/// @brief Send the auxiliary control type 2 assignment reponse message
+ 		/// @param[in] functionObjectID The object ID of the function
+ 		/// @param[in] hasError true if the assignment failed
+@@ -1644,6 +1704,7 @@ namespace isobus
+ 		std::vector<ObjectPoolDataStruct> objectPools; ///< A container to hold all object pools that have been assigned to the interface
+ 		std::vector<std::uint8_t> unsupportedFunctions; ///< Holds the functions unsupported by the server.
+ 		std::vector<AssignedAuxiliaryInputDevice> assignedAuxiliaryInputDevices; ///< A container to hold all auxiliary input devices known
++		std::shared_ptr<AuxiliaryPreferredAssignmentRepository> preferredAuxiliaryAssignmentRepository; ///< Optional persistence backend for preferred AUX-N assignments
+ 		std::uint16_t ourModelIdentificationCode = 1; ///< The model identification code of this input device
+ 		std::map<std::uint16_t, AuxiliaryInputState> ourAuxiliaryInputs; ///< The inputs on this auxiliary input device
+ #if !defined CAN_STACK_DISABLE_THREADS && !defined ARDUINO
+diff --git a/isobus/src/isobus_virtual_terminal_client.cpp b/isobus/src/isobus_virtual_terminal_client.cpp
+index f8e591f..ca2a3cc 100644
+--- a/isobus/src/isobus_virtual_terminal_client.cpp
++++ b/isobus/src/isobus_virtual_terminal_client.cpp
+@@ -210,6 +210,11 @@ namespace isobus
+ 		ourModelIdentificationCode = modelIdentificationCode;
+ 	}
+ 
++	void VirtualTerminalClient::set_auxiliary_preferred_assignment_repository(std::shared_ptr<AuxiliaryPreferredAssignmentRepository> repository)
++	{
++		preferredAuxiliaryAssignmentRepository = repository;
++	}
++
+ 	bool VirtualTerminalClient::get_auxiliary_input_learn_mode_enabled() const
+ 	{
+ 		return 0x40 == (busyCodesBitfield & 0x40);
+@@ -1979,8 +1984,27 @@ namespace isobus
+ 
+ 	bool VirtualTerminalClient::send_auxiliary_functions_preferred_assignment() const
+ 	{
+-		//! @todo load preferred assignment from saved configuration
+-		std::vector<std::uint8_t> buffer = { static_cast<std::uint8_t>(Function::PreferredAssignmentCommand), 0 };
++		const auto preferredAssignments = load_preferred_auxiliary_assignments_for_active_vt();
++
++		std::vector<std::uint8_t> buffer = { static_cast<std::uint8_t>(Function::PreferredAssignmentCommand),
++			                                 static_cast<std::uint8_t>(preferredAssignments.size()) };
++		for (const auto &assignment : preferredAssignments)
++		{
++			buffer.push_back(static_cast<std::uint8_t>(assignment.auxiliaryInputDeviceName));
++			buffer.push_back(static_cast<std::uint8_t>(assignment.auxiliaryInputDeviceName >> 8));
++			buffer.push_back(static_cast<std::uint8_t>(assignment.auxiliaryInputDeviceName >> 16));
++			buffer.push_back(static_cast<std::uint8_t>(assignment.auxiliaryInputDeviceName >> 24));
++			buffer.push_back(static_cast<std::uint8_t>(assignment.auxiliaryInputDeviceName >> 32));
++			buffer.push_back(static_cast<std::uint8_t>(assignment.auxiliaryInputDeviceName >> 40));
++			buffer.push_back(static_cast<std::uint8_t>(assignment.auxiliaryInputDeviceName >> 48));
++			buffer.push_back(static_cast<std::uint8_t>(assignment.auxiliaryInputDeviceName >> 56));
++			buffer.push_back(static_cast<std::uint8_t>(assignment.function.functionType) & 0x1F);
++			buffer.push_back(static_cast<std::uint8_t>(assignment.function.inputObjectID));
++			buffer.push_back(static_cast<std::uint8_t>(assignment.function.inputObjectID >> 8));
++			buffer.push_back(static_cast<std::uint8_t>(assignment.function.functionObjectID));
++			buffer.push_back(static_cast<std::uint8_t>(assignment.function.functionObjectID >> 8));
++		}
++
+ 		if (buffer.size() < CAN_DATA_LENGTH)
+ 		{
+ 			buffer.resize(CAN_DATA_LENGTH);
+@@ -1988,6 +2012,74 @@ namespace isobus
+ 		return send_message_to_vt(buffer.data(), buffer.size());
+ 	}
+ 
++	std::vector<VirtualTerminalClient::PreferredAuxiliaryAssignment> VirtualTerminalClient::load_preferred_auxiliary_assignments_for_active_vt() const
++	{
++		if ((nullptr == preferredAuxiliaryAssignmentRepository) ||
++		    (nullptr == partnerControlFunction))
++		{
++			return {};
++		}
++
++		return preferredAuxiliaryAssignmentRepository->load(partnerControlFunction->get_NAME().get_full_name());
++	}
++
++	void VirtualTerminalClient::merge_persisted_preferred_assignments_into_runtime_state()
++	{
++		const auto preferredAssignments = load_preferred_auxiliary_assignments_for_active_vt();
++
++		for (const auto &storedAssignment : preferredAssignments)
++		{
++			auto inputDevice = std::find_if(assignedAuxiliaryInputDevices.begin(), assignedAuxiliaryInputDevices.end(), [&storedAssignment](const AssignedAuxiliaryInputDevice &aux) {
++				return aux.name == storedAssignment.auxiliaryInputDeviceName;
++			});
++
++			if (inputDevice == assignedAuxiliaryInputDevices.end())
++			{
++				assignedAuxiliaryInputDevices.push_back({ storedAssignment.auxiliaryInputDeviceName, storedAssignment.modelIdentificationCode, {} });
++				inputDevice = assignedAuxiliaryInputDevices.end() - 1;
++			}
++
++			auto existingAssignment = std::find(inputDevice->functions.begin(), inputDevice->functions.end(), storedAssignment.function);
++			if (existingAssignment == inputDevice->functions.end())
++			{
++				inputDevice->functions.push_back(storedAssignment.function);
++			}
++		}
++	}
++
++	void VirtualTerminalClient::persist_preferred_assignment(const PreferredAuxiliaryAssignment &assignment)
++	{
++		if ((nullptr == preferredAuxiliaryAssignmentRepository) ||
++		    (nullptr == partnerControlFunction))
++		{
++			return;
++		}
++
++		preferredAuxiliaryAssignmentRepository->store(partnerControlFunction->get_NAME().get_full_name(), assignment);
++	}
++
++	void VirtualTerminalClient::remove_persisted_preferred_assignment(std::uint16_t functionObjectID)
++	{
++		if ((nullptr == preferredAuxiliaryAssignmentRepository) ||
++		    (nullptr == partnerControlFunction))
++		{
++			return;
++		}
++
++		preferredAuxiliaryAssignmentRepository->remove(partnerControlFunction->get_NAME().get_full_name(), functionObjectID);
++	}
++
++	void VirtualTerminalClient::clear_persisted_preferred_assignments()
++	{
++		if ((nullptr == preferredAuxiliaryAssignmentRepository) ||
++		    (nullptr == partnerControlFunction))
++		{
++			return;
++		}
++
++		preferredAuxiliaryAssignmentRepository->clear(partnerControlFunction->get_NAME().get_full_name());
++	}
++
+ 	bool VirtualTerminalClient::send_auxiliary_function_assignment_response(std::uint16_t functionObjectID, bool hasError, bool isAlreadyAssigned) const
+ 	{
+ 		std::uint8_t errorCode = 0;
+@@ -2621,7 +2713,7 @@ namespace isobus
+ 							else
+ 							{
+ 								LOG_DEBUG("[AUX-N]: Preferred Assignment OK");
+-								//! @todo load the preferred assignment into parentVT->assignedAuxiliaryInputDevices
++								parentVT->merge_persisted_preferred_assignments_into_runtime_state();
+ 							}
+ 						}
+ 						break;
+@@ -2646,6 +2738,10 @@ namespace isobus
+ 										{
+ 											aux.functions.clear();
+ 										}
++										if (storeAsPreferred)
++										{
++											parentVT->clear_persisted_preferred_assignments();
++										}
+ 										LOG_INFO("[AUX-N] Unassigned all functions");
+ 									}
+ 									else if (NULL_OBJECT_ID == inputObjectID)
+@@ -2659,7 +2755,7 @@ namespace isobus
+ 													aux.functions.erase(iter);
+ 													if (storeAsPreferred)
+ 													{
+-														//! @todo save preferred assignment to persistent configuration
++														parentVT->remove_persisted_preferred_assignment(functionObjectID);
+ 													}
+ 													LOG_INFO("[AUX-N] Unassigned function " + isobus::to_string(static_cast<int>(functionObjectID)) + " from input " + isobus::to_string(static_cast<int>(inputObjectID)));
+ 												}
+@@ -2687,7 +2783,7 @@ namespace isobus
+ 												result->functions.push_back(assignment);
+ 												if (storeAsPreferred)
+ 												{
+-													//! @todo save preferred assignment to persistent configuration
++													parentVT->persist_preferred_assignment({ isoName, result->modelIdentificationCode, assignment });
+ 												}
+ 												LOG_INFO("[AUX-N]: Assigned function " + isobus::to_string(static_cast<int>(functionObjectID)) + " to input " + isobus::to_string(static_cast<int>(inputObjectID)));
+ 											}
+diff --git a/test/vt_client_tests.cpp b/test/vt_client_tests.cpp
+index 89b7563..b4b0f09 100644
+--- a/test/vt_client_tests.cpp
++++ b/test/vt_client_tests.cpp
+@@ -1,4 +1,5 @@
+ #include <gtest/gtest.h>
++#include <map>
+ 
+ #include "isobus//utility/iop_file_interface.hpp"
+ #include "isobus/hardware_integration/can_hardware_interface.hpp"
+@@ -9,6 +10,7 @@
+ #include "isobus/utility/system_timing.hpp"
+ 
+ #include "helpers/control_function_helpers.hpp"
++#include "helpers/messaging_helpers.hpp"
+ #include "helpers/test_fixture.hpp"
+ 
+ using namespace isobus;
+@@ -93,6 +95,75 @@ public:
+ 	{
+ 		VirtualTerminalClient::process_command_queue();
+ 	}
++
++	void test_wrapper_merge_persisted_preferred_assignments()
++	{
++		VirtualTerminalClient::merge_persisted_preferred_assignments_into_runtime_state();
++	}
++
++	void test_wrapper_remove_persisted_preferred_assignment(std::uint16_t functionObjectID)
++	{
++		VirtualTerminalClient::remove_persisted_preferred_assignment(functionObjectID);
++	}
++};
++
++class TestPreferredAssignmentRepository : public VirtualTerminalClient::AuxiliaryPreferredAssignmentRepository
++{
++public:
++	std::map<std::uint64_t, std::vector<VirtualTerminalClient::PreferredAuxiliaryAssignment>> recordsByVT;
++	std::size_t storeCalls = 0;
++	std::size_t removeCalls = 0;
++	std::size_t clearCalls = 0;
++	VirtualTerminalClient::PreferredAuxiliaryAssignment lastStored{ };
++	std::uint16_t lastRemovedFunctionObjectID = 0;
++
++	std::vector<VirtualTerminalClient::PreferredAuxiliaryAssignment> load(std::uint64_t virtualTerminalName) override
++	{
++		auto result = recordsByVT.find(virtualTerminalName);
++		if (result == recordsByVT.end())
++		{
++			return {};
++		}
++		return result->second;
++	}
++
++	bool store(std::uint64_t virtualTerminalName, const VirtualTerminalClient::PreferredAuxiliaryAssignment &assignment) override
++	{
++		++storeCalls;
++		lastStored = assignment;
++		auto &records = recordsByVT[virtualTerminalName];
++		auto existing = std::find_if(records.begin(), records.end(), [&assignment](const VirtualTerminalClient::PreferredAuxiliaryAssignment &item) {
++			return item.function.functionObjectID == assignment.function.functionObjectID;
++		});
++		if (existing != records.end())
++		{
++			*existing = assignment;
++		}
++		else
++		{
++			records.push_back(assignment);
++		}
++		return true;
++	}
++
++	bool remove(std::uint64_t virtualTerminalName, std::uint16_t functionObjectID) override
++	{
++		++removeCalls;
++		lastRemovedFunctionObjectID = functionObjectID;
++		auto &records = recordsByVT[virtualTerminalName];
++		records.erase(std::remove_if(records.begin(), records.end(), [functionObjectID](const VirtualTerminalClient::PreferredAuxiliaryAssignment &item) {
++			return item.function.functionObjectID == functionObjectID;
++		}),
++		              records.end());
++		return true;
++	}
++
++	bool clear(std::uint64_t virtualTerminalName) override
++	{
++		++clearCalls;
++		recordsByVT.erase(virtualTerminalName);
++		return true;
++	}
+ };
+ 
+ std::vector<std::uint8_t> DerivedTestVTClient::staticTestPool;
+@@ -102,6 +173,153 @@ class VirtualTerminalTest : public AgIsoStackTestFixture
+ 	// Wrapper to give tests a more meaningful name - no content.
+ };
+ 
++static CANMessage create_vt_to_ecu_message(std::shared_ptr<ControlFunction> source,
++                                           std::shared_ptr<ControlFunction> destination,
++                                           const std::vector<std::uint8_t> &data)
++{
++	CANIdentifier identifier(CANIdentifier::Type::Extended,
++	                         static_cast<std::uint32_t>(CANLibParameterGroupNumber::VirtualTerminalToECU),
++	                         CANIdentifier::CANPriority::PriorityDefault6,
++	                         0x00,
++	                         0x00);
++	return CANMessage(CANMessage::Type::Receive,
++	                  identifier,
++	                  data.data(),
++	                  data.size(),
++	                  source,
++	                  destination,
++	                  0);
++}
++
++TEST_F(VirtualTerminalTest, PreferredAuxAssignmentsLoadIntoRuntimeState)
++{
++	NAME clientNAME(0);
++	auto internalECU = CANNetworkManager::CANNetwork.create_internal_control_function(clientNAME, 0, 0x26);
++
++	std::vector<isobus::NAMEFilter> vtNameFilters;
++	const isobus::NAMEFilter testFilter(isobus::NAME::NAMEParameters::FunctionCode, static_cast<std::uint8_t>(isobus::NAME::Function::VirtualTerminal));
++	vtNameFilters.push_back(testFilter);
++	auto vtPartner = CANNetworkManager::CANNetwork.create_partnered_control_function(0, vtNameFilters);
++
++	DerivedTestVTClient clientUnderTest(vtPartner, internalECU);
++	auto repository = std::make_shared<TestPreferredAssignmentRepository>();
++	clientUnderTest.set_auxiliary_preferred_assignment_repository(repository);
++
++	const std::uint64_t vtName = vtPartner->get_NAME().get_full_name();
++	const std::uint16_t modelId = 0x77;
++	const std::uint64_t inputDeviceName = 0x123456789ABCDEF0ULL;
++	const std::uint16_t inputObjectID = 0x1122;
++	const std::uint16_t functionObjectID = 0x3344;
++	repository->recordsByVT[vtName].push_back({ inputDeviceName,
++	                                            modelId,
++	                                            { functionObjectID,
++	                                              inputObjectID,
++	                                              VirtualTerminalClient::AuxiliaryTypeTwoFunctionType::BooleanLatching } });
++
++	std::uint16_t receivedFunctionObjectID = 0;
++	clientUnderTest.get_auxiliary_function_event_dispatcher().add_listener([&receivedFunctionObjectID](const VirtualTerminalClient::AuxiliaryFunctionEvent &event) {
++		receivedFunctionObjectID = event.function.functionObjectID;
++	});
++
++	clientUnderTest.test_wrapper_merge_persisted_preferred_assignments();
++
++	const CANMessage statusMessage = create_vt_to_ecu_message(vtPartner,
++	                                                          internalECU,
++	                                                          { static_cast<std::uint8_t>(VirtualTerminalClient::Function::AuxiliaryInputTypeTwoStatusMessage),
++	                                                            static_cast<std::uint8_t>(inputObjectID),
++	                                                            static_cast<std::uint8_t>(inputObjectID >> 8),
++	                                                            1,
++	                                                            0,
++	                                                            0,
++	                                                            0,
++	                                                            0 });
++	clientUnderTest.test_wrapper_process_rx_message(statusMessage, &clientUnderTest);
++
++	EXPECT_EQ(functionObjectID, receivedFunctionObjectID);
++
++	CANNetworkManager::CANNetwork.deactivate_control_function(vtPartner);
++	CANNetworkManager::CANNetwork.deactivate_control_function(internalECU);
++}
++
++TEST_F(VirtualTerminalTest, PreferredAuxAssignmentsStoreRemoveAndNonPreferredNoOp)
++{
++	NAME clientNAME(0);
++	auto internalECU = CANNetworkManager::CANNetwork.create_internal_control_function(clientNAME, 0, 0x26);
++
++	std::vector<isobus::NAMEFilter> vtNameFilters;
++	const isobus::NAMEFilter testFilter(isobus::NAME::NAMEParameters::FunctionCode, static_cast<std::uint8_t>(isobus::NAME::Function::VirtualTerminal));
++	vtNameFilters.push_back(testFilter);
++	auto vtPartner = CANNetworkManager::CANNetwork.create_partnered_control_function(0, vtNameFilters);
++
++	DerivedTestVTClient clientUnderTest(vtPartner, internalECU);
++	auto repository = std::make_shared<TestPreferredAssignmentRepository>();
++	clientUnderTest.set_auxiliary_preferred_assignment_repository(repository);
++
++	const std::uint64_t vtName = vtPartner->get_NAME().get_full_name();
++	const std::uint16_t modelId = 0x55;
++	const std::uint64_t inputDeviceName = 0x0102030405060708ULL;
++	repository->recordsByVT[vtName].push_back({ inputDeviceName,
++	                                            modelId,
++	                                            { 0x1001,
++	                                              0x2001,
++	                                              VirtualTerminalClient::AuxiliaryTypeTwoFunctionType::BooleanLatching } });
++	clientUnderTest.test_wrapper_merge_persisted_preferred_assignments();
++
++	const std::uint16_t preferredFunctionObjectID = 0x1002;
++	const std::uint16_t preferredInputObjectID = 0x2002;
++	const std::uint8_t preferredFunctionType = static_cast<std::uint8_t>(VirtualTerminalClient::AuxiliaryTypeTwoFunctionType::BooleanLatching);
++
++	const CANMessage preferredAssignMessage = create_vt_to_ecu_message(vtPartner,
++	                                                                   internalECU,
++	                                                                   { static_cast<std::uint8_t>(VirtualTerminalClient::Function::AuxiliaryAssignmentTypeTwoCommand),
++	                                                                     static_cast<std::uint8_t>(inputDeviceName),
++	                                                                     static_cast<std::uint8_t>(inputDeviceName >> 8),
++	                                                                     static_cast<std::uint8_t>(inputDeviceName >> 16),
++	                                                                     static_cast<std::uint8_t>(inputDeviceName >> 24),
++	                                                                     static_cast<std::uint8_t>(inputDeviceName >> 32),
++	                                                                     static_cast<std::uint8_t>(inputDeviceName >> 40),
++	                                                                     static_cast<std::uint8_t>(inputDeviceName >> 48),
++	                                                                     static_cast<std::uint8_t>(inputDeviceName >> 56),
++	                                                                     static_cast<std::uint8_t>(0x80 | preferredFunctionType),
++	                                                                     static_cast<std::uint8_t>(preferredInputObjectID),
++	                                                                     static_cast<std::uint8_t>(preferredInputObjectID >> 8),
++	                                                                     static_cast<std::uint8_t>(preferredFunctionObjectID),
++	                                                                     static_cast<std::uint8_t>(preferredFunctionObjectID >> 8) });
++	clientUnderTest.test_wrapper_process_rx_message(preferredAssignMessage, &clientUnderTest);
++
++	EXPECT_EQ(static_cast<std::size_t>(1), repository->storeCalls);
++	EXPECT_EQ(preferredFunctionObjectID, repository->lastStored.function.functionObjectID);
++	EXPECT_EQ(preferredInputObjectID, repository->lastStored.function.inputObjectID);
++
++	const std::uint16_t nonPreferredFunctionObjectID = 0x1003;
++	const CANMessage nonPreferredAssignMessage = create_vt_to_ecu_message(vtPartner,
++	                                                                      internalECU,
++	                                                                      { static_cast<std::uint8_t>(VirtualTerminalClient::Function::AuxiliaryAssignmentTypeTwoCommand),
++	                                                                        static_cast<std::uint8_t>(inputDeviceName),
++	                                                                        static_cast<std::uint8_t>(inputDeviceName >> 8),
++	                                                                        static_cast<std::uint8_t>(inputDeviceName >> 16),
++	                                                                        static_cast<std::uint8_t>(inputDeviceName >> 24),
++	                                                                        static_cast<std::uint8_t>(inputDeviceName >> 32),
++	                                                                        static_cast<std::uint8_t>(inputDeviceName >> 40),
++	                                                                        static_cast<std::uint8_t>(inputDeviceName >> 48),
++	                                                                        static_cast<std::uint8_t>(inputDeviceName >> 56),
++	                                                                        preferredFunctionType,
++	                                                                        static_cast<std::uint8_t>(preferredInputObjectID),
++	                                                                        static_cast<std::uint8_t>(preferredInputObjectID >> 8),
++	                                                                        static_cast<std::uint8_t>(nonPreferredFunctionObjectID),
++	                                                                        static_cast<std::uint8_t>(nonPreferredFunctionObjectID >> 8) });
++	clientUnderTest.test_wrapper_process_rx_message(nonPreferredAssignMessage, &clientUnderTest);
++
++	EXPECT_EQ(static_cast<std::size_t>(1), repository->storeCalls);
++
++	clientUnderTest.test_wrapper_remove_persisted_preferred_assignment(preferredFunctionObjectID);
++	EXPECT_EQ(static_cast<std::size_t>(1), repository->removeCalls);
++	EXPECT_EQ(preferredFunctionObjectID, repository->lastRemovedFunctionObjectID);
++
++	CANNetworkManager::CANNetwork.deactivate_control_function(vtPartner);
++	CANNetworkManager::CANNetwork.deactivate_control_function(internalECU);
++}
++
+ TEST_F(VirtualTerminalTest, InitializeAndInitialState)
+ {
+ 	NAME clientNAME(0);

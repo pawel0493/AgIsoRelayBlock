@@ -185,6 +185,10 @@ regardless of which SKM page is active) — mirrors `net::wifi_ap.hpp`
   is available from SKM page 4 (SK10).
 - While a channel is DI-interlocked, the runtime-disabled marker is still
   applied by appending `!` to the displayed label (for example `P1!`).
+- The pool is authored for a 480 px Data Mask canvas (60 px soft-key
+  designator width) and autoscaled by `vt_app` at runtime to the VT's
+  reported geometry, so the CFG row remains visible on lower-resolution
+  terminals.
 
 ## Soft Key Masks: four pages, chained via next/back/config keys
 

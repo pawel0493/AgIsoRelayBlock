@@ -31,6 +31,13 @@ namespace iso::vt_app {
 namespace {
 constexpr const char* kTag = "vt_app";
 constexpr uint8_t kColourBlack = 0;
+// Object-pool design-time dimensions from tools/gen_object_pool.py:
+// Data Mask layout spans a 480px design canvas, and soft-key designators are
+// authored at 60px width. Let the VT client autoscale this to the terminal's
+// actual geometry so lower-resolution VTs still show CFG rows/widgets.
+constexpr std::uint32_t kObjectPoolDesignDataMaskWidthPx = 480;
+constexpr std::uint32_t kObjectPoolDesignSoftKeyWidthPx = 60;
+constexpr std::uint8_t kCfgRelatedObjectCount = 8;
 
 std::shared_ptr<isobus::VirtualTerminalClient> g_vt_client;
 std::shared_ptr<isobus::PartneredControlFunction> g_vt_partner;
@@ -233,6 +240,10 @@ void handle_soft_key_event(const isobus::VirtualTerminalClient::VTKeyEvent& even
                                                         object_pool_ids::kDataMask, object_pool_ids::kSoftKeyMask4);
         ESP_LOGI(kTag, "SK config: switch to page 4 (relay names) -> %s", ok ? "sent" : "FAILED to send");
         refresh_relay_name_config_widgets();
+        bool select_ok = g_vt_client->send_select_input_object(
+            object_pool_ids::kRelayNameConfigInput,
+            isobus::VirtualTerminalClient::SelectInputObjectOptions::SetFocusToObject);
+        ESP_LOGI(kTag, "SK config: focus relay-name input -> %s", select_ok ? "sent" : "FAILED to send");
         return;
     }
 
@@ -322,9 +333,19 @@ void handle_soft_key_event(const isobus::VirtualTerminalClient::VTKeyEvent& even
 // level) -- useful for telling apart "we never sent it" from "we sent it
 // but the VT rejected/ignored it".
 void handle_change_soft_key_mask_event(const isobus::VirtualTerminalClient::VTChangeSoftKeyMaskEvent& event) {
-    ESP_LOGI(kTag, "VT confirms soft key mask now %u (mask %u) missingObjects=%d maskOrChildHasErrors=%d anyOtherError=%d",
+    ESP_LOGI(kTag, "VT confirms soft key mask now %u (mask %u) missingObjects=%d maskOrChildHasErrors=%d anyOtherError=%d poolDeleted=%d visibleDataMask=%u visibleSoftKeyMask=%u",
              event.softKeyMaskObjectID, event.dataOrAlarmMaskObjectID, event.missingObjects,
-             event.maskOrChildHasErrors, event.anyOtherError);
+             event.maskOrChildHasErrors, event.anyOtherError, event.poolDeleted,
+             g_vt_client ? g_vt_client->get_visible_data_mask() : 0,
+             g_vt_client ? g_vt_client->get_visible_soft_key_mask() : 0);
+}
+
+void handle_change_active_mask_event(const isobus::VirtualTerminalClient::VTChangeActiveMaskEvent& event) {
+    ESP_LOGI(kTag, "VT active mask changed to %u parent=%u errorObject=%u missingObjects=%d maskOrChildHasErrors=%d anyOtherError=%d poolDeleted=%d visibleDataMask=%u visibleSoftKeyMask=%u",
+             event.maskObjectID, event.parentObjectID, event.errorObjectID, event.missingObjects,
+             event.maskOrChildHasErrors, event.anyOtherError, event.poolDeleted,
+             g_vt_client ? g_vt_client->get_visible_data_mask() : 0,
+             g_vt_client ? g_vt_client->get_visible_soft_key_mask() : 0);
 }
 
 // Fired when the operator edits the WiFi password Input String and
@@ -480,10 +501,17 @@ void init(std::shared_ptr<isobus::InternalControlFunction> internal_ecu) {
     g_aux_preferred_repository = std::make_shared<AuxiliaryPreferredAssignmentNVSRepository>();
     g_vt_client->set_auxiliary_preferred_assignment_repository(g_aux_preferred_repository);
     g_vt_client->set_object_pool(0, object_pool_iop_start, pool_size, pool_version);
+    g_vt_client->set_object_pool_scaling(0, kObjectPoolDesignDataMaskWidthPx, kObjectPoolDesignSoftKeyWidthPx);
     g_vt_client->get_vt_soft_key_event_dispatcher().add_listener(handle_soft_key_event);
     g_vt_client->get_auxiliary_function_event_dispatcher().add_listener(handle_aux_function_event);
+    g_vt_client->get_vt_change_active_mask_event_dispatcher().add_listener(handle_change_active_mask_event);
     g_vt_client->get_vt_change_soft_key_mask_event_dispatcher().add_listener(handle_change_soft_key_mask_event);
     g_vt_client->get_vt_change_string_value_event_dispatcher().add_listener(handle_change_string_value_event);
+    ESP_LOGI(kTag, "VT object pool configured: size=%u version=%s cfgObjects=%u cfgMask=%u cfgInput=%u autoscaleDataMaskBasePx=%lu autoscaleSoftkeyBasePx=%lu",
+             pool_size, pool_version.c_str(), kCfgRelatedObjectCount, object_pool_ids::kSoftKeyMask4,
+             object_pool_ids::kRelayNameConfigInput,
+             static_cast<unsigned long>(kObjectPoolDesignDataMaskWidthPx),
+             static_cast<unsigned long>(kObjectPoolDesignSoftKeyWidthPx));
     g_vt_client->initialize(true);
     ESP_LOGI(kTag, "VT client started, waiting for a Virtual Terminal on the bus...");
 }

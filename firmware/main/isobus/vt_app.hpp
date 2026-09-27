@@ -82,4 +82,8 @@ void refresh_wifi_client_count();
 // clear), false on storage errors.
 bool clear_preferred_aux_assignments();
 
+// Resets persisted relay names to defaults (R1..R8) and refreshes the VT
+// labels immediately if the VT client is running.
+bool reset_relay_names_to_default();
+
 }  // namespace iso::vt_app

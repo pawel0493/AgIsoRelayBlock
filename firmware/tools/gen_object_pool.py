@@ -5,7 +5,8 @@ state indicator strip, a "Momentary Override Safety" checkbox, a WiFi
 status/control panel, three Soft Key Mask pages chained via next/back keys
 (page 1: SK1-SK8 relay toggles + SK9 buzzer + SK10 next-page; page 2:
 SK1-SK8 momentary override + SK9 back + SK10 next-page; page 3: SK1 WiFi
-AP toggle + SK2 override-safety toggle + SK9 back), and 17 Auxiliary
+AP toggle + SK2 override-safety toggle + SK3 relay-name config + SK9 back;
+page 4: relay-name config controls), and 17 Auxiliary
 Function Type 2 objects (a toggle + a momentary-override variant per relay
 channel, plus one momentary buzzer function) for AUX-N joystick/armrest
 assignment.
@@ -69,6 +70,7 @@ TITLE_MAX_CHARS = 44
 ID_SOFT_KEY_MASK = 1200  # page 1: SK1-SK8 toggle, SK9 buzzer, SK10 next-page
 ID_SOFT_KEY_MASK_2 = 1201  # page 2: SK1-SK8 momentary override, SK9 back, SK10 next-page
 ID_SOFT_KEY_MASK_3 = 1202  # page 3: WiFi status/control panel, SK9 back
+ID_SOFT_KEY_MASK_4 = 1203  # page 4: relay-name config
 
 # WiFi status/control panel (Data Mask, visible on every SKM page, same as
 # the override checkbox above it): mirrors net::wifi_ap.hpp. See
@@ -87,10 +89,24 @@ ID_WIFI_ENABLED_FILL = 1941
 # reserved-wider-than-default-content reasoning).
 WIFI_PASSWORD_MAX_CHARS = 32
 
+ID_RELAY_NAME_CONFIG_LABEL = 1148
+ID_RELAY_NAME_CONFIG_INPUT = 1149
+RELAY_NAME_MAX_CHARS = 3
+RELAY_LABEL_MAX_CHARS = RELAY_NAME_MAX_CHARS + 1  # optional "!" disabled suffix
+
 ID_SOFTKEY_WIFI_TOGGLE = 1264
 ID_SOFTKEY_WIFI_TOGGLE_LABEL = 1265
 ID_SOFTKEY_NEXT_3 = 1266  # page 2 -> page 3
 ID_SOFTKEY_BACK_3 = 1267  # page 3 -> page 2
+ID_SOFTKEY_CONFIG = 1268  # page 3 -> page 4
+ID_SOFTKEY_CONFIG_LABEL = 1269
+ID_SOFTKEY_CFG_PREV = 1270
+ID_SOFTKEY_CFG_PREV_LABEL = 1271
+ID_SOFTKEY_CFG_NEXT = 1272
+ID_SOFTKEY_CFG_NEXT_LABEL = 1273
+ID_SOFTKEY_CFG_RESET_DEFAULTS = 1274
+ID_SOFTKEY_CFG_RESET_DEFAULTS_LABEL = 1275
+ID_SOFTKEY_CFG_BACK = 1276
 
 ID_FONT = 1900
 ID_FONT_LARGE = 1901  # 32x32 -- Data Mask indicators + soft key labels
@@ -396,8 +412,9 @@ def build_pool():
         objects.append(make_output_rectangle(rect_id, RECT_SIZE, RECT_SIZE, fill_id))
         # Label stays below (not inside) the rectangle: black-on-black text
         # would vanish when the indicator fills solid for the ON state.
+        default_label = "R{}".format(ch)
         objects.append(make_output_string(label_id, LABEL_WIDTH, LABEL_HEIGHT,
-                                          "R{}".format(ch), font_id=ID_FONT_LARGE))
+                                          default_label.ljust(RELAY_LABEL_MAX_CHARS), font_id=ID_FONT_LARGE))
 
         # Digital input state indicator: small square, unfilled = inactive,
         # filled = active. No label needed -- position under the matching
@@ -454,6 +471,22 @@ def build_pool():
     data_mask_children.append((ID_WIFI_PASSWORD_INPUT, LEFT_MARGIN, wifi_y + CHECKBOX_SIZE + LINE_HEIGHT * 1))
     data_mask_children.append((ID_WIFI_IP_LABEL, LEFT_MARGIN, wifi_y + CHECKBOX_SIZE + LINE_HEIGHT * 2))
     data_mask_children.append((ID_WIFI_CLIENTS_LABEL, LEFT_MARGIN, wifi_y + CHECKBOX_SIZE + LINE_HEIGHT * 3))
+
+    # --- Relay-name configuration widgets (edited from VTChangeStringValue).
+    # A single shared input field edits whichever channel is selected by
+    # page-4 soft keys. The current target channel label and input value are
+    # refreshed dynamically by firmware.
+    relay_cfg_y = wifi_y + CHECKBOX_SIZE + LINE_HEIGHT * 4 + 6
+    objects.append(make_output_string(ID_RELAY_NAME_CONFIG_LABEL, 192, 12, "Relay Name CH1", font_id=ID_FONT))
+    objects.append(make_input_string(
+        ID_RELAY_NAME_CONFIG_INPUT,
+        RELAY_NAME_MAX_CHARS * 8,
+        12,
+        RELAY_NAME_MAX_CHARS,
+        "R1".ljust(RELAY_NAME_MAX_CHARS),
+        font_id=ID_FONT))
+    data_mask_children.append((ID_RELAY_NAME_CONFIG_LABEL, LEFT_MARGIN, relay_cfg_y))
+    data_mask_children.append((ID_RELAY_NAME_CONFIG_INPUT, LEFT_MARGIN + 120, relay_cfg_y))
 
     # --- Soft Key Mask page 1 (default/initial): SK1-SK8 (relay toggles) +
     # SK9 (buzzer) + SK10 (next page). Emitted *before* the Data Mask that
@@ -521,10 +554,29 @@ def build_pool():
     objects.append(make_output_string(ID_SOFTKEY_OVERRIDE_LABEL, RECT_SIZE, LABEL_HEIGHT, "OR", font_id=ID_FONT_LARGE))
     objects.append(make_key(ID_SOFTKEY_OVERRIDE, key_code=2, children=[(ID_SOFTKEY_OVERRIDE_LABEL, 2, 2)]))
 
+    objects.append(make_output_string(ID_SOFTKEY_CONFIG_LABEL, RECT_SIZE, LABEL_HEIGHT, "CFG", font_id=ID_FONT_LARGE))
+    objects.append(make_key(ID_SOFTKEY_CONFIG, key_code=3, children=[(ID_SOFTKEY_CONFIG_LABEL, 2, 2)]))
+
     objects.append(make_key(ID_SOFTKEY_BACK_3, key_code=9, children=[(ID_SOFTKEY_BACK_LABEL, 2, 2)]))
 
     objects.append(make_soft_key_mask(
-        [ID_SOFTKEY_WIFI_TOGGLE, ID_SOFTKEY_OVERRIDE, ID_SOFTKEY_BACK_3], mask_id=ID_SOFT_KEY_MASK_3))
+        [ID_SOFTKEY_WIFI_TOGGLE, ID_SOFTKEY_OVERRIDE, ID_SOFTKEY_CONFIG, ID_SOFTKEY_BACK_3], mask_id=ID_SOFT_KEY_MASK_3))
+
+    # --- Soft Key Mask page 4: relay-name config mode.
+    objects.append(make_output_string(ID_SOFTKEY_CFG_PREV_LABEL, RECT_SIZE, LABEL_HEIGHT, "<", font_id=ID_FONT_LARGE))
+    objects.append(make_key(ID_SOFTKEY_CFG_PREV, key_code=1, children=[(ID_SOFTKEY_CFG_PREV_LABEL, 2, 2)]))
+
+    objects.append(make_output_string(ID_SOFTKEY_CFG_NEXT_LABEL, RECT_SIZE, LABEL_HEIGHT, ">", font_id=ID_FONT_LARGE))
+    objects.append(make_key(ID_SOFTKEY_CFG_NEXT, key_code=2, children=[(ID_SOFTKEY_CFG_NEXT_LABEL, 2, 2)]))
+
+    objects.append(make_output_string(ID_SOFTKEY_CFG_RESET_DEFAULTS_LABEL, RECT_SIZE, LABEL_HEIGHT, "DEF", font_id=ID_FONT_LARGE))
+    objects.append(make_key(ID_SOFTKEY_CFG_RESET_DEFAULTS, key_code=10, children=[(ID_SOFTKEY_CFG_RESET_DEFAULTS_LABEL, 2, 2)]))
+
+    objects.append(make_key(ID_SOFTKEY_CFG_BACK, key_code=9, children=[(ID_SOFTKEY_BACK_LABEL, 2, 2)]))
+
+    objects.append(make_soft_key_mask(
+        [ID_SOFTKEY_CFG_PREV, ID_SOFTKEY_CFG_NEXT, ID_SOFTKEY_CFG_BACK, ID_SOFTKEY_CFG_RESET_DEFAULTS],
+        mask_id=ID_SOFT_KEY_MASK_4))
 
     objects.append(make_data_mask(data_mask_children))
 
@@ -595,6 +647,7 @@ def generate_ids_header():
         "constexpr uint16_t kSoftKeyMask = {};".format(ID_SOFT_KEY_MASK),
         "constexpr uint16_t kSoftKeyMask2 = {};".format(ID_SOFT_KEY_MASK_2),
         "constexpr uint16_t kSoftKeyMask3 = {};".format(ID_SOFT_KEY_MASK_3),
+        "constexpr uint16_t kSoftKeyMask4 = {};".format(ID_SOFT_KEY_MASK_4),
         "constexpr uint16_t kTitleString = {};".format(ID_TITLE_STRING),
         "constexpr uint16_t kTitleStringMaxChars = {};".format(TITLE_MAX_CHARS),
         "",
@@ -609,6 +662,9 @@ def generate_ids_header():
         "constexpr uint16_t kWifiIpLabel = {};".format(ID_WIFI_IP_LABEL),
         "constexpr uint16_t kWifiClientsLabel = {};".format(ID_WIFI_CLIENTS_LABEL),
         "constexpr uint16_t kWifiPasswordMaxChars = {};".format(WIFI_PASSWORD_MAX_CHARS),
+        "constexpr uint16_t kRelayNameConfigLabel = {};".format(ID_RELAY_NAME_CONFIG_LABEL),
+        "constexpr uint16_t kRelayNameConfigInput = {};".format(ID_RELAY_NAME_CONFIG_INPUT),
+        "constexpr uint16_t kRelayNameMaxChars = {};".format(RELAY_NAME_MAX_CHARS),
         "",
         "// channel: 1-8",
         "inline uint16_t relay_rect_id(int channel) {{ return {} + channel; }}".format(1110),
@@ -623,6 +679,11 @@ def generate_ids_header():
         "inline uint16_t softkey2_id(int channel) {{ return {} + channel; }}".format(1250),
         "constexpr uint16_t kSoftkeyBack = {};".format(ID_SOFTKEY_BACK),
         "constexpr uint16_t kSoftkeyOverrideToggle = {};".format(ID_SOFTKEY_OVERRIDE),
+        "constexpr uint16_t kSoftkeyConfig = {};".format(ID_SOFTKEY_CONFIG),
+        "constexpr uint16_t kSoftkeyConfigBack = {};".format(ID_SOFTKEY_CFG_BACK),
+        "constexpr uint16_t kSoftkeyConfigPrevChannel = {};".format(ID_SOFTKEY_CFG_PREV),
+        "constexpr uint16_t kSoftkeyConfigNextChannel = {};".format(ID_SOFTKEY_CFG_NEXT),
+        "constexpr uint16_t kSoftkeyConfigResetDefaults = {};".format(ID_SOFTKEY_CFG_RESET_DEFAULTS),
         "constexpr uint16_t kOverrideCheckboxFillAttr = {};".format(ID_OVERRIDE_CHECKBOX_FILL),
         "",
         "// AUX-N Auxiliary Function Type 2 objects. channel: 1-8.",

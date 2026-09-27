@@ -33,7 +33,8 @@ private:
 	enum class WorkerCommand : std::uint8_t
 	{
 		LoadRecords,
-		SaveRecords
+		SaveRecords,
+		StopWorker
 	};
 
 	struct WorkerRequest
@@ -48,7 +49,6 @@ private:
 	static void worker_task_entry(void *context);
 	void worker_task();
 	bool dispatch_request(WorkerRequest &request);
-	void cleanup_worker_resources();
 	bool load_all_records(std::vector<PersistedAssignmentRecord> &records);
 	bool save_all_records(const std::vector<PersistedAssignmentRecord> &records);
 	static bool load_all_records_from_nvs(std::vector<PersistedAssignmentRecord> &records);
@@ -60,6 +60,7 @@ private:
 	void *workerTask = nullptr;
 	void *workerTaskControlBlock = nullptr;
 	void *workerTaskStack = nullptr;
+	SemaphoreHandle_t workerExitSignal = nullptr;
 	std::size_t workerStackDepthWords = 0;
 	std::mutex operationMutex;
 };

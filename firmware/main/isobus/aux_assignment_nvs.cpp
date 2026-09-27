@@ -23,7 +23,7 @@ constexpr std::uint16_t kBlobVersion = 1;
 constexpr std::size_t kRecordSize = 8 + 8 + 2 + 2 + 2 + 1;
 constexpr std::size_t kWorkerQueueDepth = 4;
 constexpr std::size_t kWorkerStackSizeBytes = 6 * 1024;
-constexpr TickType_t kWorkerRequestTimeout = pdMS_TO_TICKS(5000);
+constexpr TickType_t kWorkerStopTimeout = pdMS_TO_TICKS(1000);
 
 void append_u16(std::vector<std::uint8_t> &buffer, std::uint16_t value)
 {
@@ -103,10 +103,30 @@ AuxiliaryPreferredAssignmentNVSRepository::AuxiliaryPreferredAssignmentNVSReposi
 	workerTaskStack = heap_caps_malloc(workerStackDepthWords * sizeof(StackType_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 	workerTaskControlBlock = heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 	workerQueue = xQueueCreate(kWorkerQueueDepth, sizeof(WorkerRequest *));
-	if ((nullptr == workerTaskStack) || (nullptr == workerTaskControlBlock) || (nullptr == workerQueue))
+	workerExitSignal = xSemaphoreCreateBinary();
+	if ((nullptr == workerTaskStack) || (nullptr == workerTaskControlBlock) || (nullptr == workerQueue) || (nullptr == workerExitSignal))
 	{
 		ESP_LOGE(kTag, "failed to create NVS worker resources");
-		cleanup_worker_resources();
+		if (nullptr != workerQueue)
+		{
+			vQueueDelete(static_cast<QueueHandle_t>(workerQueue));
+			workerQueue = nullptr;
+		}
+		if (nullptr != workerTaskControlBlock)
+		{
+			heap_caps_free(workerTaskControlBlock);
+			workerTaskControlBlock = nullptr;
+		}
+		if (nullptr != workerTaskStack)
+		{
+			heap_caps_free(workerTaskStack);
+			workerTaskStack = nullptr;
+		}
+		if (nullptr != workerExitSignal)
+		{
+			vSemaphoreDelete(workerExitSignal);
+			workerExitSignal = nullptr;
+		}
 		return;
 	}
 
@@ -121,40 +141,92 @@ AuxiliaryPreferredAssignmentNVSRepository::AuxiliaryPreferredAssignmentNVSReposi
 	if (nullptr == workerTask)
 	{
 		ESP_LOGE(kTag, "failed to create NVS worker task");
-		cleanup_worker_resources();
+		if (nullptr != workerQueue)
+		{
+			vQueueDelete(static_cast<QueueHandle_t>(workerQueue));
+			workerQueue = nullptr;
+		}
+		if (nullptr != workerTaskControlBlock)
+		{
+			heap_caps_free(workerTaskControlBlock);
+			workerTaskControlBlock = nullptr;
+		}
+		if (nullptr != workerTaskStack)
+		{
+			heap_caps_free(workerTaskStack);
+			workerTaskStack = nullptr;
+		}
+		if (nullptr != workerExitSignal)
+		{
+			vSemaphoreDelete(workerExitSignal);
+			workerExitSignal = nullptr;
+		}
 	}
 }
 
 AuxiliaryPreferredAssignmentNVSRepository::~AuxiliaryPreferredAssignmentNVSRepository()
 {
-	cleanup_worker_resources();
-}
+	std::lock_guard<std::mutex> lock(operationMutex);
 
-void AuxiliaryPreferredAssignmentNVSRepository::cleanup_worker_resources()
-{
-	if (nullptr != workerTask)
+	const auto queueHandle = static_cast<QueueHandle_t>(workerQueue);
+	const auto taskHandle = static_cast<TaskHandle_t>(workerTask);
+	const auto currentTask = xTaskGetCurrentTaskHandle();
+	bool workerStopAcknowledged = false;
+	if ((nullptr != queueHandle) && (nullptr != taskHandle) && (currentTask != taskHandle))
 	{
-		vTaskDelete(static_cast<TaskHandle_t>(workerTask));
-		workerTask = nullptr;
+		if (nullptr != workerExitSignal)
+		{
+			(void)xSemaphoreTake(workerExitSignal, 0);
+		}
+
+		WorkerRequest stopRequest{
+			WorkerCommand::StopWorker,
+			nullptr,
+			nullptr,
+			xSemaphoreCreateBinary(),
+			false
+		};
+		if (nullptr != stopRequest.completionSignal)
+		{
+			auto *requestPointer = &stopRequest;
+			if (xQueueSend(queueHandle, &requestPointer, kWorkerStopTimeout) == pdTRUE)
+			{
+				workerStopAcknowledged = (xSemaphoreTake(stopRequest.completionSignal, kWorkerStopTimeout) == pdTRUE);
+			}
+			vSemaphoreDelete(stopRequest.completionSignal);
+		}
+	}
+	if ((nullptr != workerExitSignal) && (nullptr != taskHandle) && (currentTask != taskHandle))
+	{
+		(void)xSemaphoreTake(workerExitSignal, kWorkerStopTimeout);
 	}
 
-	if (nullptr != workerQueue)
+	if ((nullptr != taskHandle) && (currentTask != taskHandle) && (!workerStopAcknowledged))
 	{
-		vQueueDelete(static_cast<QueueHandle_t>(workerQueue));
-		workerQueue = nullptr;
+		vTaskDelete(taskHandle);
 	}
-
+	if (nullptr != queueHandle)
+	{
+		vQueueDelete(queueHandle);
+	}
 	if (nullptr != workerTaskControlBlock)
 	{
 		heap_caps_free(workerTaskControlBlock);
-		workerTaskControlBlock = nullptr;
 	}
-
 	if (nullptr != workerTaskStack)
 	{
 		heap_caps_free(workerTaskStack);
-		workerTaskStack = nullptr;
 	}
+	if (nullptr != workerExitSignal)
+	{
+		vSemaphoreDelete(workerExitSignal);
+	}
+
+	workerTask = nullptr;
+	workerQueue = nullptr;
+	workerTaskControlBlock = nullptr;
+	workerTaskStack = nullptr;
+	workerExitSignal = nullptr;
 }
 
 void AuxiliaryPreferredAssignmentNVSRepository::worker_task_entry(void *context)
@@ -163,6 +235,10 @@ void AuxiliaryPreferredAssignmentNVSRepository::worker_task_entry(void *context)
 	if (nullptr != self)
 	{
 		self->worker_task();
+		if (nullptr != self->workerExitSignal)
+		{
+			xSemaphoreGive(self->workerExitSignal);
+		}
 	}
 	vTaskDelete(nullptr);
 }
@@ -186,11 +262,20 @@ void AuxiliaryPreferredAssignmentNVSRepository::worker_task()
 			case WorkerCommand::SaveRecords:
 				request->success = (nullptr != request->recordsToSave) && save_all_records_to_nvs(*request->recordsToSave);
 				break;
+
+			case WorkerCommand::StopWorker:
+				request->success = true;
+				break;
 		}
 
 		if (nullptr != request->completionSignal)
 		{
 			xSemaphoreGive(request->completionSignal);
+		}
+
+		if (request->command == WorkerCommand::StopWorker)
+		{
+			break;
 		}
 	}
 }
@@ -203,6 +288,21 @@ bool AuxiliaryPreferredAssignmentNVSRepository::dispatch_request(WorkerRequest &
 		return false;
 	}
 
+	if (xTaskGetCurrentTaskHandle() == static_cast<TaskHandle_t>(workerTask))
+	{
+		switch (request.command)
+		{
+			case WorkerCommand::LoadRecords:
+				return (nullptr != request.records) && load_all_records_from_nvs(*request.records);
+
+			case WorkerCommand::SaveRecords:
+				return (nullptr != request.recordsToSave) && save_all_records_to_nvs(*request.recordsToSave);
+
+			case WorkerCommand::StopWorker:
+				return true;
+		}
+	}
+
 	request.completionSignal = xSemaphoreCreateBinary();
 	if (nullptr == request.completionSignal)
 	{
@@ -210,8 +310,9 @@ bool AuxiliaryPreferredAssignmentNVSRepository::dispatch_request(WorkerRequest &
 		return false;
 	}
 
+	request.success = false;
 	auto *requestPointer = &request;
-	if (xQueueSend(static_cast<QueueHandle_t>(workerQueue), &requestPointer, kWorkerRequestTimeout) != pdTRUE)
+	if (xQueueSend(static_cast<QueueHandle_t>(workerQueue), &requestPointer, portMAX_DELAY) != pdTRUE)
 	{
 		ESP_LOGE(kTag, "failed to enqueue NVS worker request");
 		vSemaphoreDelete(request.completionSignal);
@@ -219,14 +320,9 @@ bool AuxiliaryPreferredAssignmentNVSRepository::dispatch_request(WorkerRequest &
 		return false;
 	}
 
-	const bool completed = (xSemaphoreTake(request.completionSignal, kWorkerRequestTimeout) == pdTRUE);
+	(void)xSemaphoreTake(request.completionSignal, portMAX_DELAY);
 	vSemaphoreDelete(request.completionSignal);
 	request.completionSignal = nullptr;
-	if (!completed)
-	{
-		ESP_LOGE(kTag, "NVS worker request timed out");
-		return false;
-	}
 	return request.success;
 }
 

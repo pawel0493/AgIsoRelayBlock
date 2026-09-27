@@ -86,7 +86,11 @@ bool RelayNameNVSRepository::load(std::array<std::string, kChannelCount + 1> &na
 	}
 
 	nvs_handle_t handle;
-	esp_err_t err = nvs_open(kNamespace, NVS_READWRITE, &handle);
+	esp_err_t err = nvs_open(kNamespace, NVS_READONLY, &handle);
+	if (err == ESP_ERR_NVS_NOT_FOUND)
+	{
+		return true;
+	}
 	if (err != ESP_OK)
 	{
 		ESP_LOGE(kTag, "nvs_open failed: %s", esp_err_to_name(err));

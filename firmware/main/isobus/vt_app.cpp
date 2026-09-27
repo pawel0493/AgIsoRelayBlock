@@ -355,11 +355,15 @@ void handle_change_string_value_event(const isobus::VirtualTerminalClient::VTCha
 
     if (event.objectID == object_pool_ids::kRelayNameConfigInput) {
         const std::string sanitized = RelayNameNVSRepository::sanitize_name(event.value, g_config_selected_channel);
-        g_relay_names[g_config_selected_channel] = sanitized;
-        if (!g_relay_name_repository || !g_relay_name_repository->store(g_config_selected_channel, sanitized)) {
-            ESP_LOGW(kTag, "Failed to persist relay name for channel %d", g_config_selected_channel);
-        } else {
+        bool store_ok = true;
+        if (g_relay_name_repository) {
+            store_ok = g_relay_name_repository->store(g_config_selected_channel, sanitized);
+        }
+        if (store_ok) {
+            g_relay_names[g_config_selected_channel] = sanitized;
             ESP_LOGI(kTag, "Relay channel %d name set to '%s'", g_config_selected_channel, sanitized.c_str());
+        } else {
+            ESP_LOGW(kTag, "Failed to persist relay name for channel %d, keeping previous value", g_config_selected_channel);
         }
         refresh_relay_label(g_config_selected_channel);
         refresh_relay_name_config_widgets();

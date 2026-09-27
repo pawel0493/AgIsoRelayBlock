@@ -438,12 +438,6 @@ stored in ESP32 NVS.
 - defaults are `R1`..`R8`;
 - disabled channels still append `!` at runtime (for example `P1!`).
 
-Reset all persisted relay names to defaults through the local HTTP API:
-
-```sh
-curl -X POST http://192.168.4.1/api/relay-names/reset
-```
-
 ## Build
 
 Requires [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/get-started/index.html)

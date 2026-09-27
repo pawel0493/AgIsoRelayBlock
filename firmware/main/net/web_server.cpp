@@ -189,15 +189,6 @@ esp_err_t aux_clear_post_handler(httpd_req_t* req) {
     return httpd_resp_send(req, "VT not ready or clear failed", HTTPD_RESP_USE_STRLEN);
 }
 
-esp_err_t relay_names_reset_post_handler(httpd_req_t* req) {
-    if (iso::vt_app::reset_relay_names_to_default()) {
-        ESP_LOGI(kTag, "web: reset persisted relay names to defaults");
-        return httpd_resp_send(req, "OK", HTTPD_RESP_USE_STRLEN);
-    }
-    httpd_resp_set_status(req, "500 Internal Server Error");
-    return httpd_resp_send(req, "Failed to reset relay names", HTTPD_RESP_USE_STRLEN);
-}
-
 // Streams the raw request body directly into the inactive OTA partition
 // -- no multipart parsing, the upload page POSTs the .bin file's bytes
 // as-is. Flashes then reboots on success; on any failure, aborts the OTA
@@ -292,7 +283,6 @@ void init() {
         {"/api/state", HTTP_GET, state_get_handler, nullptr},
         {"/api/relay", HTTP_POST, relay_post_handler, nullptr},
         {"/api/aux/clear", HTTP_POST, aux_clear_post_handler, nullptr},
-        {"/api/relay-names/reset", HTTP_POST, relay_names_reset_post_handler, nullptr},
         {"/ota", HTTP_GET, ota_page_get_handler, nullptr},
         {"/ota/upload", HTTP_POST, ota_upload_post_handler, nullptr},
     };

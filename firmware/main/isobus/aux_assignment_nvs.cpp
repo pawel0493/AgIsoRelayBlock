@@ -5,7 +5,11 @@
 #include <cstdint>
 #include <vector>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "freertos/idf_additions.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
 #include "nvs.h"
 
 namespace iso::vt_app {
@@ -17,6 +21,9 @@ constexpr const char *kBlobKey = "records";
 constexpr std::uint32_t kBlobMagic = 0x50585541; // "AUXP" LE
 constexpr std::uint16_t kBlobVersion = 1;
 constexpr std::size_t kRecordSize = 8 + 8 + 2 + 2 + 2 + 1;
+constexpr std::size_t kWorkerQueueDepth = 4;
+constexpr std::size_t kWorkerStackSizeBytes = 6 * 1024;
+constexpr TickType_t kWorkerStopTimeout = pdMS_TO_TICKS(1000);
 
 void append_u16(std::vector<std::uint8_t> &buffer, std::uint16_t value)
 {
@@ -90,6 +97,235 @@ bool read_u64(const std::vector<std::uint8_t> &buffer, std::size_t &offset, std:
 
 } // namespace
 
+AuxiliaryPreferredAssignmentNVSRepository::AuxiliaryPreferredAssignmentNVSRepository()
+{
+	workerStackDepthWords = kWorkerStackSizeBytes / sizeof(StackType_t);
+	workerTaskStack = heap_caps_malloc(workerStackDepthWords * sizeof(StackType_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+	workerTaskControlBlock = heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+	workerQueue = xQueueCreate(kWorkerQueueDepth, sizeof(WorkerRequest *));
+	workerExitSignal = xSemaphoreCreateBinary();
+	if ((nullptr == workerTaskStack) || (nullptr == workerTaskControlBlock) || (nullptr == workerQueue) || (nullptr == workerExitSignal))
+	{
+		ESP_LOGE(kTag, "failed to create NVS worker resources");
+		if (nullptr != workerQueue)
+		{
+			vQueueDelete(static_cast<QueueHandle_t>(workerQueue));
+			workerQueue = nullptr;
+		}
+		if (nullptr != workerTaskControlBlock)
+		{
+			heap_caps_free(workerTaskControlBlock);
+			workerTaskControlBlock = nullptr;
+		}
+		if (nullptr != workerTaskStack)
+		{
+			heap_caps_free(workerTaskStack);
+			workerTaskStack = nullptr;
+		}
+		if (nullptr != workerExitSignal)
+		{
+			vSemaphoreDelete(workerExitSignal);
+			workerExitSignal = nullptr;
+		}
+		return;
+	}
+
+	workerTask = xTaskCreateStaticPinnedToCore(worker_task_entry,
+	                                           "aux_pref_nvs",
+	                                           static_cast<uint32_t>(workerStackDepthWords),
+	                                           this,
+	                                           tskIDLE_PRIORITY + 1,
+	                                           static_cast<StackType_t *>(workerTaskStack),
+	                                           static_cast<StaticTask_t *>(workerTaskControlBlock),
+	                                           tskNO_AFFINITY);
+	if (nullptr == workerTask)
+	{
+		ESP_LOGE(kTag, "failed to create NVS worker task");
+		if (nullptr != workerQueue)
+		{
+			vQueueDelete(static_cast<QueueHandle_t>(workerQueue));
+			workerQueue = nullptr;
+		}
+		if (nullptr != workerTaskControlBlock)
+		{
+			heap_caps_free(workerTaskControlBlock);
+			workerTaskControlBlock = nullptr;
+		}
+		if (nullptr != workerTaskStack)
+		{
+			heap_caps_free(workerTaskStack);
+			workerTaskStack = nullptr;
+		}
+		if (nullptr != workerExitSignal)
+		{
+			vSemaphoreDelete(workerExitSignal);
+			workerExitSignal = nullptr;
+		}
+	}
+}
+
+AuxiliaryPreferredAssignmentNVSRepository::~AuxiliaryPreferredAssignmentNVSRepository()
+{
+	std::lock_guard<std::mutex> lock(operationMutex);
+
+	const auto queueHandle = static_cast<QueueHandle_t>(workerQueue);
+	const auto taskHandle = static_cast<TaskHandle_t>(workerTask);
+	const auto currentTask = xTaskGetCurrentTaskHandle();
+	bool workerStopAcknowledged = false;
+	if ((nullptr != queueHandle) && (nullptr != taskHandle) && (currentTask != taskHandle))
+	{
+		if (nullptr != workerExitSignal)
+		{
+			(void)xSemaphoreTake(workerExitSignal, 0);
+		}
+
+		WorkerRequest stopRequest{
+			WorkerCommand::StopWorker,
+			nullptr,
+			nullptr,
+			xSemaphoreCreateBinary(),
+			false
+		};
+		if (nullptr != stopRequest.completionSignal)
+		{
+			auto *requestPointer = &stopRequest;
+			if (xQueueSend(queueHandle, &requestPointer, kWorkerStopTimeout) == pdTRUE)
+			{
+				workerStopAcknowledged = (xSemaphoreTake(stopRequest.completionSignal, kWorkerStopTimeout) == pdTRUE);
+			}
+			vSemaphoreDelete(stopRequest.completionSignal);
+		}
+	}
+	if ((nullptr != workerExitSignal) && (nullptr != taskHandle) && (currentTask != taskHandle))
+	{
+		(void)xSemaphoreTake(workerExitSignal, kWorkerStopTimeout);
+	}
+
+	if ((nullptr != taskHandle) && (currentTask != taskHandle) && (!workerStopAcknowledged))
+	{
+		vTaskDelete(taskHandle);
+	}
+	if (nullptr != queueHandle)
+	{
+		vQueueDelete(queueHandle);
+	}
+	if (nullptr != workerTaskControlBlock)
+	{
+		heap_caps_free(workerTaskControlBlock);
+	}
+	if (nullptr != workerTaskStack)
+	{
+		heap_caps_free(workerTaskStack);
+	}
+	if (nullptr != workerExitSignal)
+	{
+		vSemaphoreDelete(workerExitSignal);
+	}
+
+	workerTask = nullptr;
+	workerQueue = nullptr;
+	workerTaskControlBlock = nullptr;
+	workerTaskStack = nullptr;
+	workerExitSignal = nullptr;
+}
+
+void AuxiliaryPreferredAssignmentNVSRepository::worker_task_entry(void *context)
+{
+	auto *self = static_cast<AuxiliaryPreferredAssignmentNVSRepository *>(context);
+	if (nullptr != self)
+	{
+		self->worker_task();
+		if (nullptr != self->workerExitSignal)
+		{
+			xSemaphoreGive(self->workerExitSignal);
+		}
+	}
+	vTaskDelete(nullptr);
+}
+
+void AuxiliaryPreferredAssignmentNVSRepository::worker_task()
+{
+	WorkerRequest *request = nullptr;
+	while (xQueueReceive(static_cast<QueueHandle_t>(workerQueue), &request, portMAX_DELAY) == pdTRUE)
+	{
+		if (nullptr == request)
+		{
+			continue;
+		}
+
+		switch (request->command)
+		{
+			case WorkerCommand::LoadRecords:
+				request->success = (nullptr != request->records) && load_all_records_from_nvs(*request->records);
+				break;
+
+			case WorkerCommand::SaveRecords:
+				request->success = (nullptr != request->recordsToSave) && save_all_records_to_nvs(*request->recordsToSave);
+				break;
+
+			case WorkerCommand::StopWorker:
+				request->success = true;
+				break;
+		}
+
+		if (nullptr != request->completionSignal)
+		{
+			xSemaphoreGive(request->completionSignal);
+		}
+
+		if (request->command == WorkerCommand::StopWorker)
+		{
+			break;
+		}
+	}
+}
+
+bool AuxiliaryPreferredAssignmentNVSRepository::dispatch_request(WorkerRequest &request)
+{
+	if ((nullptr == workerQueue) || (nullptr == workerTask))
+	{
+		ESP_LOGE(kTag, "NVS worker is not available");
+		return false;
+	}
+
+	if (xTaskGetCurrentTaskHandle() == static_cast<TaskHandle_t>(workerTask))
+	{
+		switch (request.command)
+		{
+			case WorkerCommand::LoadRecords:
+				return (nullptr != request.records) && load_all_records_from_nvs(*request.records);
+
+			case WorkerCommand::SaveRecords:
+				return (nullptr != request.recordsToSave) && save_all_records_to_nvs(*request.recordsToSave);
+
+			case WorkerCommand::StopWorker:
+				return true;
+		}
+	}
+
+	request.completionSignal = xSemaphoreCreateBinary();
+	if (nullptr == request.completionSignal)
+	{
+		ESP_LOGE(kTag, "failed to create request synchronization primitive");
+		return false;
+	}
+
+	request.success = false;
+	auto *requestPointer = &request;
+	if (xQueueSend(static_cast<QueueHandle_t>(workerQueue), &requestPointer, portMAX_DELAY) != pdTRUE)
+	{
+		ESP_LOGE(kTag, "failed to enqueue NVS worker request");
+		vSemaphoreDelete(request.completionSignal);
+		request.completionSignal = nullptr;
+		return false;
+	}
+
+	(void)xSemaphoreTake(request.completionSignal, portMAX_DELAY);
+	vSemaphoreDelete(request.completionSignal);
+	request.completionSignal = nullptr;
+	return request.success;
+}
+
 std::vector<std::uint8_t> AuxiliaryPreferredAssignmentNVSRepository::serialize(const std::vector<PersistedAssignmentRecord> &records)
 {
 	std::vector<std::uint8_t> blob;
@@ -161,6 +397,18 @@ bool AuxiliaryPreferredAssignmentNVSRepository::deserialize(const std::vector<st
 
 bool AuxiliaryPreferredAssignmentNVSRepository::load_all_records(std::vector<PersistedAssignmentRecord> &records)
 {
+	WorkerRequest request{
+		WorkerCommand::LoadRecords,
+		&records,
+		nullptr,
+		nullptr,
+		false
+	};
+	return dispatch_request(request);
+}
+
+bool AuxiliaryPreferredAssignmentNVSRepository::load_all_records_from_nvs(std::vector<PersistedAssignmentRecord> &records)
+{
 	records.clear();
 
 	nvs_handle_t handle;
@@ -204,6 +452,18 @@ bool AuxiliaryPreferredAssignmentNVSRepository::load_all_records(std::vector<Per
 
 bool AuxiliaryPreferredAssignmentNVSRepository::save_all_records(const std::vector<PersistedAssignmentRecord> &records)
 {
+	WorkerRequest request{
+		WorkerCommand::SaveRecords,
+		nullptr,
+		&records,
+		nullptr,
+		false
+	};
+	return dispatch_request(request);
+}
+
+bool AuxiliaryPreferredAssignmentNVSRepository::save_all_records_to_nvs(const std::vector<PersistedAssignmentRecord> &records)
+{
 	nvs_handle_t handle;
 	esp_err_t err = nvs_open(kNamespace, NVS_READWRITE, &handle);
 	if (err != ESP_OK)
@@ -241,6 +501,8 @@ bool AuxiliaryPreferredAssignmentNVSRepository::save_all_records(const std::vect
 
 std::vector<isobus::VirtualTerminalClient::PreferredAuxiliaryAssignment> AuxiliaryPreferredAssignmentNVSRepository::load(std::uint64_t virtualTerminalName)
 {
+	std::lock_guard<std::mutex> lock(operationMutex);
+
 	std::vector<PersistedAssignmentRecord> records;
 	if (!load_all_records(records))
 	{
@@ -269,6 +531,8 @@ std::vector<isobus::VirtualTerminalClient::PreferredAuxiliaryAssignment> Auxilia
 
 bool AuxiliaryPreferredAssignmentNVSRepository::store(std::uint64_t virtualTerminalName, const isobus::VirtualTerminalClient::PreferredAuxiliaryAssignment &assignment)
 {
+	std::lock_guard<std::mutex> lock(operationMutex);
+
 	std::vector<PersistedAssignmentRecord> records;
 	if (!load_all_records(records))
 	{
@@ -302,6 +566,8 @@ bool AuxiliaryPreferredAssignmentNVSRepository::store(std::uint64_t virtualTermi
 
 bool AuxiliaryPreferredAssignmentNVSRepository::remove(std::uint64_t virtualTerminalName, std::uint16_t functionObjectID)
 {
+	std::lock_guard<std::mutex> lock(operationMutex);
+
 	std::vector<PersistedAssignmentRecord> records;
 	if (!load_all_records(records))
 	{
@@ -325,6 +591,8 @@ bool AuxiliaryPreferredAssignmentNVSRepository::remove(std::uint64_t virtualTerm
 
 bool AuxiliaryPreferredAssignmentNVSRepository::clear(std::uint64_t virtualTerminalName)
 {
+	std::lock_guard<std::mutex> lock(operationMutex);
+
 	std::vector<PersistedAssignmentRecord> records;
 	if (!load_all_records(records))
 	{

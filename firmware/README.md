@@ -15,10 +15,11 @@ roadmap. Blinks the WS2812 status LED, toggles relay channel 1 through the
 TCA9554PWR I2C expander, debounces all 8 digital inputs, runs a CAN/TWAI
 self-test loopback, hands the TWAI peripheral to AgIsoStack++ to claim an
 ISO 11783-5 NAME/address, then uploads a VT object pool (an 8-channel
-relay indicator grid with a DI state box under each one, two Soft Key Mask
+relay indicator grid with a DI state box under each one, four Soft Key Mask
 pages, and 17 Auxiliary Function Type 2 objects) and wires it all up: SKM
-page 1 (toggle) + page 2 (momentary override) + 17 AUX-N functions all
-drive the same relays, and digital input DI{n} acts as a fixed
+page 1 (toggle) + page 2 (momentary override) + page 3 (WiFi/settings) +
+page 4 (relay-name configuration) + 17 AUX-N functions all drive the same
+relays, and digital input DI{n} acts as a fixed
 limit-switch interlock forcing channel {n} off. See
 [../docs/vt-ui-design.md](../docs/vt-ui-design.md) for the full UI design
 and why behind each of these.
@@ -424,6 +425,18 @@ curl -X POST http://192.168.4.1/api/aux/clear
 
 This clears persisted preferred AUX-N assignments for the currently
 connected VT partner NAME from NVS.
+
+## VT relay-name configuration persistence
+
+Relay channel names are editable from the VT (Settings page -> `CFG`) and
+stored in ESP32 NVS.
+
+- per-channel names are sanitized to safe ASCII (`A-Z`, `a-z`, `0-9`,
+  space, `_`, `-`);
+- name length is limited to 3 characters to keep rendering stable on
+  constrained VTs;
+- defaults are `R1`..`R8`;
+- disabled channels still append `!` at runtime (for example `P1!`).
 
 ## Build
 

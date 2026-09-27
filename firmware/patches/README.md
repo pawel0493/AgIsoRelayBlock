@@ -125,3 +125,15 @@ Implements persisted AUX-N preferred assignment support in
   - preferred assignment persistence update,
   - preferred removal path,
   - non-preferred assignment no-op for persistence.
+
+---
+
+## 0003-vt-tests-load-iop-from-stable-path.patch
+
+**Applies to submodule commit `795aa4981992cec4ce8ea23ca36a79d50f4f9244`.**
+
+Makes VT autoscaling tests reliably find `VT3TestPool.iop` under CTest by
+injecting an absolute source-tree path from CMake
+(`VT3_TEST_POOL_ABS_PATH`) and using it first in
+`test/vt_client_tests.cpp`, with existing relative-path fallbacks kept for
+IDE/manual runs.

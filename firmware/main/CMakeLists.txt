@@ -11,6 +11,7 @@ idf_component_register(
         "isobus/ecu_identity.cpp"
         "isobus/vt_app.cpp"
         "isobus/aux_assignment_nvs.cpp"
+        "isobus/relay_name_nvs.cpp"
         "isobus/diagnostics.cpp"
         "automation/interlock.cpp"
         "net/wifi_ap.cpp"

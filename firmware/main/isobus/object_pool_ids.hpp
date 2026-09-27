@@ -12,6 +12,7 @@ constexpr uint16_t kDataMask = 1100;
 constexpr uint16_t kSoftKeyMask = 1200;
 constexpr uint16_t kSoftKeyMask2 = 1201;
 constexpr uint16_t kSoftKeyMask3 = 1202;
+constexpr uint16_t kSoftKeyMask4 = 1203;
 constexpr uint16_t kTitleString = 1101;
 constexpr uint16_t kTitleStringMaxChars = 44;
 
@@ -26,6 +27,9 @@ constexpr uint16_t kWifiPasswordInput = 1145;
 constexpr uint16_t kWifiIpLabel = 1146;
 constexpr uint16_t kWifiClientsLabel = 1147;
 constexpr uint16_t kWifiPasswordMaxChars = 32;
+constexpr uint16_t kRelayNameConfigLabel = 1148;
+constexpr uint16_t kRelayNameConfigInput = 1149;
+constexpr uint16_t kRelayNameMaxChars = 3;
 
 // channel: 1-8
 inline uint16_t relay_rect_id(int channel) { return 1110 + channel; }
@@ -40,6 +44,11 @@ inline uint16_t softkey_id(int key_number) { return 1210 + key_number; }
 inline uint16_t softkey2_id(int channel) { return 1250 + channel; }
 constexpr uint16_t kSoftkeyBack = 1260;
 constexpr uint16_t kSoftkeyOverrideToggle = 1262;
+constexpr uint16_t kSoftkeyConfig = 1268;
+constexpr uint16_t kSoftkeyConfigBack = 1276;
+constexpr uint16_t kSoftkeyConfigPrevChannel = 1270;
+constexpr uint16_t kSoftkeyConfigNextChannel = 1272;
+constexpr uint16_t kSoftkeyConfigResetDefaults = 1274;
 constexpr uint16_t kOverrideCheckboxFillAttr = 1940;
 
 // AUX-N Auxiliary Function Type 2 objects. channel: 1-8.

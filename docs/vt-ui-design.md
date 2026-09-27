@@ -1,14 +1,14 @@
 # Virtual Terminal UI Design (Main Screen)
 
 Concrete object pool design for the primary VT screen: 8 relay-state
-indicators (4-per-row × 2 rows), two Soft Key Mask pages (8 toggle keys +
-buzzer + next-page on page 1; 8 momentary-override keys + back on page 2),
+indicators (4-per-row × 2 rows), multiple Soft Key Mask pages (relay
+control, momentary override, WiFi/settings, and relay-name configuration),
 and 17 matching AUX-N functions (a toggle + a momentary-override variant
 per relay channel R1–R8, plus one momentary buzzer function). This refines
 the general VT/AUX-N notes in
 [isobus-protocol.md](isobus-protocol.md) into an actual layout. Naming/icon
-*picking* UI (Phase 5) and automation rule UI (Phase 6) build on top of
-this later and are not covered here.
+*icon picking* UI (Phase 5) and automation rule UI (Phase 6) build on top
+of this later and are not covered here.
 
 Status: **implemented and bench-verified** (Phase 3 — VT screen + SKM —
 confirmed rendering and toggling relays on a real VT; Phase 4 — AUX-N —
@@ -171,9 +171,24 @@ regardless of which SKM page is active) — mirrors `net::wifi_ap.hpp`
   anything the operator does, since it can change on its own (a phone
   joining/leaving the AP).
 
-## Soft Key Masks: three pages, chained via next/back keys
+## Relay name configuration (VT)
 
-Three Soft Key Mask objects, switched at runtime with the VT's "Change
+- A dedicated relay-name editor row lives on the Data Mask:
+  - read-only label with current target channel (for example
+    `"Relay Name CH3"`),
+  - Input String field (max 3 characters) for that channel's name.
+- SKM page 4 selects the target channel and the same input field updates to
+  that channel's current stored value.
+- Names are sanitized to safe ASCII (`A-Z`, `a-z`, `0-9`, space, `_`, `-`)
+  and capped to 3 characters to keep rendering stable on constrained VTs.
+- Names are persisted in NVS and restored at boot; reset-to-default (`R1..R8`)
+  is available from SKM page 4 (SK10).
+- While a channel is DI-interlocked, the runtime-disabled marker is still
+  applied by appending `!` to the displayed label (for example `P1!`).
+
+## Soft Key Masks: four pages, chained via next/back/config keys
+
+Four Soft Key Mask objects, switched at runtime with the VT's "Change
 Soft Key Mask" command (`send_change_softkey_mask`) rather than existing
 as separate Data Masks — the Data Mask itself never changes, just which
 SKM is currently shown alongside it.
@@ -194,13 +209,23 @@ SKM is currently shown alongside it.
 | SK9 | Switch back to page 1 | Text label **"<<"** |
 | SK10 | Switch to page 3 | Text label **">>"** — reuses page 1's own SK10 label object (identical meaning) |
 
-**Page 3 "WiFi/Settings SKM" (3 keys):**
+**Page 3 "WiFi/Settings SKM" (4 keys):**
 
 | Key | Action | Icon |
 |---|---|---|
 | SK1 | Toggle the WiFi panel's "AP Enabled" checkbox | Text label **"AP"** |
 | SK2 | Toggle the "Momentary Override Safety" checkbox | Text label **"OR"** |
+| SK3 | Open relay-name configuration page | Text label **"CFG"** |
 | SK9 | Switch back to page 2 | Text label **"<<"** — reuses page 2's own SK9 label object |
+
+**Page 4 "Relay Name Config SKM" (4 keys):**
+
+| Key | Action | Icon |
+|---|---|---|
+| SK1 | Select previous relay channel for name editing | Text label **"<"** |
+| SK2 | Select next relay channel for name editing | Text label **">"** |
+| SK9 | Switch back to page 3 | Text label **"<<"** |
+| SK10 | Reset all relay names to defaults (`R1..R8`) | Text label **"DEF"** |
 
 Key labels use 32×32 text (bumped up from an initial 8×8 pass that was
 "way too small" on the bench — roughly 4× the linear size), and SK1–SK8

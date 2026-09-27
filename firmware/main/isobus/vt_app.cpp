@@ -1,5 +1,6 @@
 #include "isobus/vt_app.hpp"
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -11,6 +12,7 @@
 #include "io/relay_driver.hpp"
 #include "isobus/diagnostics.hpp"
 #include "isobus/aux_assignment_nvs.hpp"
+#include "isobus/relay_name_nvs.hpp"
 #include "isobus/isobus/can_NAME.hpp"
 #include "isobus/isobus/can_network_manager.hpp"
 #include "isobus/isobus/can_partnered_control_function.hpp"
@@ -33,6 +35,66 @@ constexpr uint8_t kColourBlack = 0;
 std::shared_ptr<isobus::VirtualTerminalClient> g_vt_client;
 std::shared_ptr<isobus::PartneredControlFunction> g_vt_partner;
 std::shared_ptr<AuxiliaryPreferredAssignmentNVSRepository> g_aux_preferred_repository;
+std::shared_ptr<RelayNameNVSRepository> g_relay_name_repository;
+std::array<std::string, RelayNameNVSRepository::kChannelCount + 1> g_relay_names;
+int g_config_selected_channel = 1;
+
+std::string make_relay_label_text(int channel, bool di_active)
+{
+	std::string label = RelayNameNVSRepository::default_name(channel);
+	if ((channel >= 1) && (channel <= RelayNameNVSRepository::kChannelCount) && !g_relay_names[channel].empty())
+	{
+		label = g_relay_names[channel];
+	}
+	if (di_active)
+	{
+		label += "!";
+	}
+	return label;
+}
+
+void refresh_relay_label(int channel)
+{
+	if (!g_vt_client)
+	{
+		return;
+	}
+	g_vt_client->send_change_string_value(
+	  object_pool_ids::relay_label_id(channel),
+	  make_relay_label_text(channel, automation::interlock::is_disabled(channel)));
+}
+
+void reset_relay_names_in_memory_to_defaults()
+{
+	for (int channel = 1; channel <= RelayNameNVSRepository::kChannelCount; ++channel)
+	{
+		g_relay_names[channel] = RelayNameNVSRepository::default_name(channel);
+	}
+}
+
+void refresh_relay_name_config_widgets()
+{
+	if (!g_vt_client)
+	{
+		return;
+	}
+	if (g_config_selected_channel < 1)
+	{
+		g_config_selected_channel = RelayNameNVSRepository::kChannelCount;
+	}
+	if (g_config_selected_channel > RelayNameNVSRepository::kChannelCount)
+	{
+		g_config_selected_channel = 1;
+	}
+
+	g_vt_client->send_change_string_value(
+	  object_pool_ids::kRelayNameConfigLabel,
+	  "Relay Name CH" + std::to_string(g_config_selected_channel));
+
+	std::string padded = g_relay_names[g_config_selected_channel];
+	padded.resize(object_pool_ids::kRelayNameMaxChars, ' ');
+	g_vt_client->send_change_string_value(object_pool_ids::kRelayNameConfigInput, padded);
+}
 
 // "Momentary Override Safety" (docs/vt-ui-design.md): unfilled/off by
 // default, and deliberately never persisted -- always starts false at
@@ -166,6 +228,53 @@ void handle_soft_key_event(const isobus::VirtualTerminalClient::VTKeyEvent& even
         return;
     }
 
+    if (event.objectID == object_pool_ids::kSoftkeyConfig) {
+        bool ok = g_vt_client->send_change_softkey_mask(isobus::VirtualTerminalClient::MaskType::DataMask,
+                                                        object_pool_ids::kDataMask, object_pool_ids::kSoftKeyMask4);
+        ESP_LOGI(kTag, "SK config: switch to page 4 (relay names) -> %s", ok ? "sent" : "FAILED to send");
+        refresh_relay_name_config_widgets();
+        return;
+    }
+
+    if (event.objectID == object_pool_ids::kSoftkeyConfigBack) {
+        bool ok = g_vt_client->send_change_softkey_mask(isobus::VirtualTerminalClient::MaskType::DataMask,
+                                                        object_pool_ids::kDataMask, object_pool_ids::kSoftKeyMask3);
+        ESP_LOGI(kTag, "SK config back: switch to page 3 -> %s", ok ? "sent" : "FAILED to send");
+        return;
+    }
+
+    if (event.objectID == object_pool_ids::kSoftkeyConfigPrevChannel) {
+        --g_config_selected_channel;
+        if (g_config_selected_channel < 1) {
+            g_config_selected_channel = RelayNameNVSRepository::kChannelCount;
+        }
+        refresh_relay_name_config_widgets();
+        return;
+    }
+
+    if (event.objectID == object_pool_ids::kSoftkeyConfigNextChannel) {
+        ++g_config_selected_channel;
+        if (g_config_selected_channel > RelayNameNVSRepository::kChannelCount) {
+            g_config_selected_channel = 1;
+        }
+        refresh_relay_name_config_widgets();
+        return;
+    }
+
+    if (event.objectID == object_pool_ids::kSoftkeyConfigResetDefaults) {
+        if (g_relay_name_repository && g_relay_name_repository->clear_all()) {
+            reset_relay_names_in_memory_to_defaults();
+            for (int ch = 1; ch <= RelayNameNVSRepository::kChannelCount; ++ch) {
+                refresh_relay_label(ch);
+            }
+            refresh_relay_name_config_widgets();
+            ESP_LOGI(kTag, "Relay names reset to defaults from VT");
+        } else {
+            ESP_LOGW(kTag, "Failed to reset relay names to defaults");
+        }
+        return;
+    }
+
     if (event.objectID == object_pool_ids::kSoftkeyWifiToggle) {
         bool new_enabled = !net::wifi_ap::is_enabled();
         net::wifi_ap::set_enabled(new_enabled);
@@ -224,25 +333,41 @@ void handle_change_soft_key_mask_event(const isobus::VirtualTerminalClient::VTCh
 // fixed reserved length, not just what changed -- trim trailing padding to
 // get the password the operator actually intended.
 void handle_change_string_value_event(const isobus::VirtualTerminalClient::VTChangeStringValueEvent& event) {
-    if (event.objectID != object_pool_ids::kWifiPasswordInput) {
+    if (event.objectID == object_pool_ids::kWifiPasswordInput) {
+        std::string password = event.value;
+        while (!password.empty() && password.back() == ' ') {
+            password.pop_back();
+        }
+        if (net::wifi_ap::set_password(password)) {
+            ESP_LOGI(kTag, "WiFi AP password changed from the VT panel");
+        } else {
+            ESP_LOGW(kTag, "WiFi AP password change rejected (needs at least 8 characters) -- reverting the displayed value");
+        }
+        // Re-push the actual current password either way: on success this just
+        // re-pads it to the field's fixed width the same way it started; on
+        // rejection this undoes what the operator just typed, since
+        // net::wifi_ap::set_password() left the real password unchanged.
+        std::string display = net::wifi_ap::get_password();
+        display.resize(object_pool_ids::kWifiPasswordMaxChars, ' ');
+        g_vt_client->send_change_string_value(object_pool_ids::kWifiPasswordInput, display);
         return;
     }
-    std::string password = event.value;
-    while (!password.empty() && password.back() == ' ') {
-        password.pop_back();
+
+    if (event.objectID == object_pool_ids::kRelayNameConfigInput) {
+        const std::string sanitized = RelayNameNVSRepository::sanitize_name(event.value, g_config_selected_channel);
+        bool store_ok = true;
+        if (g_relay_name_repository) {
+            store_ok = g_relay_name_repository->store(g_config_selected_channel, sanitized);
+        }
+        if (store_ok) {
+            g_relay_names[g_config_selected_channel] = sanitized;
+            ESP_LOGI(kTag, "Relay channel %d name set to '%s'", g_config_selected_channel, sanitized.c_str());
+        } else {
+            ESP_LOGW(kTag, "Failed to persist relay name for channel %d, keeping previous value", g_config_selected_channel);
+        }
+        refresh_relay_label(g_config_selected_channel);
+        refresh_relay_name_config_widgets();
     }
-    if (net::wifi_ap::set_password(password)) {
-        ESP_LOGI(kTag, "WiFi AP password changed from the VT panel");
-    } else {
-        ESP_LOGW(kTag, "WiFi AP password change rejected (needs at least 8 characters) -- reverting the displayed value");
-    }
-    // Re-push the actual current password either way: on success this just
-    // re-pads it to the field's fixed width the same way it started; on
-    // rejection this undoes what the operator just typed, since
-    // net::wifi_ap::set_password() left the real password unchanged.
-    std::string display = net::wifi_ap::get_password();
-    display.resize(object_pool_ids::kWifiPasswordMaxChars, ' ');
-    g_vt_client->send_change_string_value(object_pool_ids::kWifiPasswordInput, display);
 }
 
 // AUX-N: both function variants per channel are declared non-latching/
@@ -308,8 +433,9 @@ void set_interlock_state(int channel, bool di_active) {
     // "!" marks the channel as disabled directly on its own Data Mask
     // label, so it's obvious at a glance why a channel won't respond,
     // without needing to look at the (smaller, further away) DI indicator.
-    std::string label = "R" + std::to_string(channel) + (di_active ? "!" : "");
-    g_vt_client->send_change_string_value(object_pool_ids::relay_label_id(channel), label);
+    g_vt_client->send_change_string_value(
+        object_pool_ids::relay_label_id(channel),
+        make_relay_label_text(channel, di_active));
 }
 
 void init(std::shared_ptr<isobus::InternalControlFunction> internal_ecu) {
@@ -342,6 +468,13 @@ void init(std::shared_ptr<isobus::InternalControlFunction> internal_ecu) {
     // permanently forcing a re-upload from this side.
     const std::string pool_version =
         isobus::IOPFileInterface::hash_object_pool_to_version(object_pool_iop_start, pool_size);
+
+    reset_relay_names_in_memory_to_defaults();
+    g_relay_name_repository = std::make_shared<RelayNameNVSRepository>();
+    if (!g_relay_name_repository->load(g_relay_names)) {
+        ESP_LOGW(kTag, "Failed to load persisted relay names, using defaults");
+        reset_relay_names_in_memory_to_defaults();
+    }
 
     g_vt_client = std::make_shared<isobus::VirtualTerminalClient>(vt_partner, internal_ecu);
     g_aux_preferred_repository = std::make_shared<AuxiliaryPreferredAssignmentNVSRepository>();
@@ -434,6 +567,7 @@ void resync_display() {
     // one clearly-labeled place this comes from, not two that could drift.
     g_vt_client->send_change_string_value(object_pool_ids::kWifiIpLabel, "IP: 192.168.4.1");
     refresh_wifi_client_count();
+    refresh_relay_name_config_widgets();
 }
 
 // The connected-client count can change at any moment (someone's phone
@@ -468,6 +602,23 @@ bool clear_preferred_aux_assignments() {
     }
     const uint64_t vt_name = g_vt_partner->get_NAME().get_full_name();
     return g_aux_preferred_repository->clear(vt_name);
+}
+
+bool reset_relay_names_to_default() {
+    if (!g_relay_name_repository) {
+        g_relay_name_repository = std::make_shared<RelayNameNVSRepository>();
+    }
+    if (!g_relay_name_repository->clear_all()) {
+        return false;
+    }
+    reset_relay_names_in_memory_to_defaults();
+    if (g_vt_client) {
+        for (int ch = 1; ch <= RelayNameNVSRepository::kChannelCount; ++ch) {
+            refresh_relay_label(ch);
+        }
+        refresh_relay_name_config_widgets();
+    }
+    return true;
 }
 
 }  // namespace iso::vt_app

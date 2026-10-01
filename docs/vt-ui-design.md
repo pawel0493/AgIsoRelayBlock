@@ -1,27 +1,27 @@
-# Virtual Terminal UI Design (Main Screen)
+# Virtual Terminal UI Design
 
-Concrete object pool design for the primary VT screen: 8 relay-state
-indicators (4-per-row × 2 rows), two Soft Key Mask pages (8 toggle keys +
-buzzer + next-page on page 1; 8 momentary-override keys + back on page 2),
-and 17 matching AUX-N functions (a toggle + a momentary-override variant
-per relay channel R1–R8, plus one momentary buzzer function). This refines
+Concrete object pool design for the main and channel-name configuration VT
+screens: 8 relay-state indicators (4-per-row × 2 rows), three Soft Key Mask
+pages for relay control/settings, one configuration Data Mask, and 17
+matching AUX-N functions (a toggle + a momentary-override variant per relay
+channel, plus one momentary buzzer function). This refines
 the general VT/AUX-N notes in
-[isobus-protocol.md](isobus-protocol.md) into an actual layout. Naming/icon
-*picking* UI (Phase 5) and automation rule UI (Phase 6) build on top of
-this later and are not covered here.
+[isobus-protocol.md](isobus-protocol.md) into an actual layout. Channel-name
+configuration is implemented; icon picking and a general automation rule UI
+remain future work.
 
-Status: **implemented and bench-verified** (Phase 3 — VT screen + SKM —
-confirmed rendering and toggling relays on a real VT; Phase 4 — AUX-N —
-implemented, end-to-end assignment testing pending real joystick hardware
-access). See [roadmap.md](roadmap.md) Phases 3–4 and
+Status: VT screen + SKM and AUX-N control are **implemented and
+bench-verified**; channel-name configuration is implemented, pending
+bench verification. End-to-end AUX-N assignment testing still needs real
+joystick hardware access. See [roadmap.md](roadmap.md) and
 [firmware/tools/gen_object_pool.py](../firmware/tools/gen_object_pool.py)
-for the actual generator. No bitmaps have been drawn yet (Phase 5) — text
-labels are used in their place for now.
+for the actual generator. No bitmaps have been drawn yet — text labels are
+used in their place for now.
 
 ## Object pool overview
 
 - **Working Set** object (root of our pool).
-- **Data Mask "Main"** — the only mask for MVP:
+- **Data Mask "Main"** — the primary mask:
   - Title/identification text (device name).
   - The relay indicator grid (below).
   - Soft Key Mask assigned: **"Main SKM"** (below) — a second SKM page
@@ -29,8 +29,9 @@ labels are used in their place for now.
     the Data Mask's own static assignment (see
     [Soft Key Masks](#soft-key-masks-two-pages-reached-via-a-nextback-key)
     below).
-- Later phases add more masks (naming/icon picker, automation rules) — out
-  of scope here, see [roadmap.md](roadmap.md).
+- A separate channel-name configuration mask is also included below. Icon
+  picking and general automation rules remain future work; see
+  [roadmap.md](roadmap.md).
 
 ## Relay indicator grid (on the Data Mask)
 
@@ -45,7 +46,7 @@ reflowed into a grid. Each widget:
   - **ON:** solid fill (black, or the VT's "active/highlight" colour where
     available) — state is shown by fill, not by hue, so it still reads
     correctly on 2-colour and colour-blind-unfriendly displays.
-- An **Output String** "R1".."R8" in 32×32 text, directly under the
+- An **Output String** with the configured channel name, directly under the
   rectangle (not inside it: white-on-black would be fine, but a solid
   black ON fill would swallow black text drawn on top of it, so it stays
   below where it's readable in both states).
@@ -63,16 +64,16 @@ small additions to each channel's widget in the relay indicator grid make
 this visible and testable from the VT, without any new fonts, strings, or
 bitmap graphics:
 
-- A small (20×20) **Output Rectangle** under the "R{n}" label, unfilled =
+- A small (20×20) **Output Rectangle** under the configured channel label, unfilled =
   DI inactive, filled = DI active — the same fill-by-state convention as
   the main 60×60 relay indicator, just smaller and with no label of its
   own (its position, directly below the matching channel, already says
   what it is). Cheap: a rectangle + a dedicated `FillAttributes` object
   per channel, ~336 bytes total for all 8 — deliberately avoided anything
-  graphics-based here, both for the effort and because the whole point of
-  postponing Phase 5 was not growing the pool with bitmap data yet.
-- The channel's own "R{n}" label gets a **`!` suffix** while its DI is
-  active (`"R1!"` instead of `"R1"`, via `send_change_string_value` — no
+  graphics-based here, both for the effort and to keep the pool free of
+  bitmap data until icon picking is implemented.
+- The channel's own configured name gets a **`!` suffix** while its DI is
+  active (`"Start!"` instead of `"Start"`, via `send_change_string_value` — no
   new objects needed, just a runtime value change on the string that's
   already there), so it's obvious at a glance *why* a channel won't
   respond, without having to notice the smaller DI box.
@@ -173,24 +174,24 @@ regardless of which SKM page is active) — mirrors `net::wifi_ap.hpp`
 
 ## Soft Key Masks: three pages, chained via next/back keys
 
-Three Soft Key Mask objects, switched at runtime with the VT's "Change
-Soft Key Mask" command (`send_change_softkey_mask`) rather than existing
-as separate Data Masks — the Data Mask itself never changes, just which
-SKM is currently shown alongside it.
+Three Soft Key Mask objects are switched at runtime with the VT's "Change
+Soft Key Mask" command (`send_change_softkey_mask`) alongside the main Data
+Mask. The channel-name configuration uses a separate Data Mask and its own
+back-key mask (see below).
 
 **Page 1 "Main SKM" (10 keys) — the default on connect:**
 
 | Key | Action | Icon |
 |---|---|---|
-| SK1–SK8 | Toggle relay channel 1–8 | Text label **"R{n}"**, underlined — same "R{n}" + underline convention as the AUX-N toggle variant, since an SKM press already toggles (same icon used by that channel's AUX-N function, so the physical key and the on-screen row look consistent) |
-| SK9 | Trigger buzzer (momentary pulse) | Text label **"BZ"** — Distinct buzzer/speaker pictogram once icons exist (Phase 5) |
+| SK1–SK8 | Toggle relay channel 1–8 | Configured channel name, underlined — same name + underline convention as the AUX-N toggle variant |
+| SK9 | Trigger buzzer (momentary pulse) | Text label **"BZ"** — Distinct buzzer/speaker pictogram once icon picking is implemented |
 | SK10 | Switch to page 2 | Text label **">>"** |
 
 **Page 2 "Momentary SKM" (10 keys):**
 
 | Key | Action | Icon |
 |---|---|---|
-| SK1–SK8 | Momentary-override relay channel 1–8 (see [AUX-N functions](#aux-n-functions-17-total) below for exactly what this does) | Text label **"R{n}"**, plain (no underline) — reuses the same label object as that channel's Data Mask indicator, matching the AUX-N momentary variant's convention |
+| SK1–SK8 | Momentary-override relay channel 1–8 (see [AUX-N functions](#aux-n-functions-17-total) below for exactly what this does) | Configured channel name, plain (no underline) — reuses the same label object as that channel's Data Mask indicator |
 | SK9 | Switch back to page 1 | Text label **"<<"** |
 | SK10 | Switch to page 3 | Text label **">>"** — reuses page 1's own SK10 label object (identical meaning) |
 
@@ -200,12 +201,34 @@ SKM is currently shown alongside it.
 |---|---|---|
 | SK1 | Toggle the WiFi panel's "AP Enabled" checkbox | Text label **"AP"** |
 | SK2 | Toggle the "Momentary Override Safety" checkbox | Text label **"OR"** |
+| SK3 | Open the channel-name configuration screen | Text label **"CFG"** |
 | SK9 | Switch back to page 2 | Text label **"<<"** — reuses page 2's own SK9 label object |
 
-Key labels use 32×32 text (bumped up from an initial 8×8 pass that was
-"way too small" on the bench — roughly 4× the linear size), and SK1–SK8
-show **"R1"–"R8"** rather than a bare digit, matching the Data Mask and
-AUX-N assignment list labeling for consistency.
+Channel labels use a compact 12×16 font so names up to 8 characters fit in
+the same Data Mask and soft-key label widths, including the Data Mask's
+additional interlock `!` suffix. Toggle labels remain
+underlined; momentary labels remain plain.
+
+## Channel-name configuration
+
+Press **CFG** (SK3 on page 3) to switch to the dedicated configuration Data
+Mask. It lists all eight channels as editable Input String fields, with a
+back key at SK9 returning to the main Data Mask. The VT's on-screen keyboard
+edits each channel directly; clearing a field restores its default `R{n}`
+name.
+
+Names are trimmed, restricted to printable ASCII, and limited to 8 characters
+so they remain compact on the Data Mask and soft keys. They are stored as
+`name1`–`name8` in the NVS `channels` namespace and survive reboot and firmware
+updates. The field and all channel labels use the same normalized value.
+Changing a name updates the Data Mask, both SK1–SK8 pages, and the toggle and
+momentary AUX-N designators at runtime. Toggle labels stay underlined, and a
+disabled channel's Data Mask label retains the `!` suffix. A VT that keeps an
+old AUX-N assignment-list designator may need its object pool refreshed or a
+reconnect; the firmware reapplies saved names after every pool upload/boot.
+
+The "Momentary Override Safety" checkbox is separate from channel
+configuration and is **never persisted**; it always remains false at boot.
 
 **Compatibility caveat:** not every VT renders 10 soft keys at once — many
 show 6 physical keys per mask, some 8, larger ones more. This needs
@@ -258,8 +281,8 @@ value straight through.
 
 | # | Function | Type 2 `FunctionType` | Behavior | Label/Icon |
 |---|---|---|---|---|
-| 1–8 | Relay channel 1–8, toggle | `BooleanNonLatchingIncreaseValue` (2) | Firmware toggles the relay on each press (rising edge), ignores release — a momentary button acts like a latch | Text label **"R{n}"**, **underlined** — same digits as the momentary variant below (an earlier `"R{n}#"` attempt rendered as an unlabeled, clipped "R" in the AUX-N assignment list: its label object had been left at the pre-readability-pass size while everything else got bumped) |
-| 9–16 | Relay channel 1–8, momentary override | `BooleanNonLatchingIncreaseValue` (2) | Firmware saves the relay's current state and inverts it on press; restores the saved state on release — see the note above | Text label **"R{n}"**, plain (no underline) — reuses the same label object as that channel's Data Mask indicator, and shared with the same-numbered key on SKM page 2 |
+| 1–8 | Relay channel 1–8, toggle | `BooleanNonLatchingIncreaseValue` (2) | Firmware toggles the relay on each press (rising edge), ignores release — a momentary button acts like a latch | Configured channel name, **underlined** |
+| 9–16 | Relay channel 1–8, momentary override | `BooleanNonLatchingIncreaseValue` (2) | Firmware saves the relay's current state and inverts it on press; restores the saved state on release — see the note above | Configured channel name, plain (no underline) — reuses the same label object as that channel's Data Mask indicator, and shared with the same-numbered key on SKM page 2 |
 | 17 | Buzzer | `BooleanNonLatchingIncreaseValue` (2) | Edge-triggered pulse on rising edge; matches SK9's pulse behavior | Own dedicated **"BZ"** label |
 
 See `handle_aux_function_event` in

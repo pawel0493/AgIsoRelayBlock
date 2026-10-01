@@ -113,15 +113,16 @@ bug-fix history):
    hand-encoded (no external pool designer tool used) and confirmed
    rendering correctly on a real VT.
 4. ~~Wire relay/DI GPIOs into the stack.~~ — done: relays are driven by
-   two Soft Key Mask pages and 17 AUX-N functions; all 8 digital inputs
+   three Soft Key Mask pages and 17 AUX-N functions; all 8 digital inputs
    are debounced and each shown on screen next to its channel.
 5. ~~AUX-N support.~~ — done: 17 Auxiliary Function Type 2 objects (a
    toggle + a momentary-invert-and-restore variant per relay channel, plus
    a momentary buzzer trigger), confirmed rendering and driving relays on
    a real VT.
-6. On-screen channel naming/icon picker + persistence — **deliberately
-   skipped for now**, needs real bitmap artwork (Picture Graphics), which
-   both takes design effort and grows the object pool / upload time.
+6. ~~On-screen channel naming + persistence.~~ — done: use the VT's CFG
+   screen to rename all eight channels, with names retained in NVS across
+   reboot and firmware updates. Icon picking remains deferred; it needs
+   Picture Graphics artwork and grows the object pool / upload time.
 7. Input → output automation rules — **started**: the first, concrete use
    case (digital input DI{n} as a limit-switch interlock forcing relay
    channel {n} off) is done, plus a "Momentary Override Safety" checkbox

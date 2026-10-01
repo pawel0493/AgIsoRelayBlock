@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "automation/interlock.hpp"
+#include "config/nvs_store.hpp"
 #include "esp_app_desc.h"
 #include "esp_log.h"
 #include "io/buzzer_driver.hpp"
@@ -41,6 +42,40 @@ std::shared_ptr<isobus::PartneredControlFunction> g_vt_partner;
 // channel back on while its DI has it disabled; the toggle paths (SK1-8,
 // the AUX-N latch variant) never bypass it regardless of this setting.
 bool g_momentary_override_safety_enabled = false;
+
+void update_channel_label(int channel) {
+    if (!g_vt_client) {
+        return;
+    }
+
+    const std::string name = config::nvs_store::get_channel_name(channel);
+    const std::string display_name = name + (automation::interlock::is_disabled(channel) ? "!" : "");
+    g_vt_client->send_change_string_value(object_pool_ids::relay_label_id(channel), display_name);
+}
+
+void update_channel_name_outputs(int channel) {
+    if (!g_vt_client) {
+        return;
+    }
+
+    const std::string name = config::nvs_store::get_channel_name(channel);
+    g_vt_client->send_change_string_value(object_pool_ids::softkey_label_id(channel), name);
+    g_vt_client->send_change_string_value(object_pool_ids::aux_latch_label_id(channel), name);
+    std::string input_value = name;
+    input_value.resize(object_pool_ids::kConfigNameMaxChars, ' ');
+    g_vt_client->send_change_string_value(object_pool_ids::config_name_input_id(channel), input_value);
+}
+
+void update_channel_name_display(int channel) {
+    update_channel_label(channel);
+    update_channel_name_outputs(channel);
+}
+
+void update_all_channel_name_outputs() {
+    for (int channel = 1; channel <= config::nvs_store::kChannelCount; ++channel) {
+        update_channel_name_outputs(channel);
+    }
+}
 
 // The relay driver is the one source of truth for relay state (per
 // docs/vt-ui-design.md's precedence rule: last action wins, no input path
@@ -164,6 +199,20 @@ void handle_soft_key_event(const isobus::VirtualTerminalClient::VTKeyEvent& even
         return;
     }
 
+    if (event.objectID == object_pool_ids::kSoftkeyConfig) {
+        bool ok = g_vt_client->send_change_active_mask(object_pool_ids::kWorkingSet,
+                                                       object_pool_ids::kConfigDataMask);
+        ESP_LOGI(kTag, "SK CFG: open channel-name configuration -> %s", ok ? "sent" : "FAILED to send");
+        return;
+    }
+
+    if (event.objectID == object_pool_ids::kSoftkeyConfigBack) {
+        bool ok = g_vt_client->send_change_active_mask(object_pool_ids::kWorkingSet,
+                                                       object_pool_ids::kDataMask);
+        ESP_LOGI(kTag, "SK back: return to main screen -> %s", ok ? "sent" : "FAILED to send");
+        return;
+    }
+
     if (event.objectID == object_pool_ids::kSoftkeyWifiToggle) {
         bool new_enabled = !net::wifi_ap::is_enabled();
         net::wifi_ap::set_enabled(new_enabled);
@@ -216,12 +265,23 @@ void handle_change_soft_key_mask_event(const isobus::VirtualTerminalClient::VTCh
              event.maskOrChildHasErrors, event.anyOtherError);
 }
 
-// Fired when the operator edits the WiFi password Input String and
-// confirms it on the VT (see docs/vt-ui-design.md#wifi-status--control-panel).
-// The VT always reports the *entire* field content, space-padded to its
-// fixed reserved length, not just what changed -- trim trailing padding to
-// get the password the operator actually intended.
+// Fired when the operator edits an Input String and confirms it on the VT.
+// Channel-name fields are fixed-width and arrive space-padded; NVS normalizes
+// their names before saving. The WiFi password handler trims its own padding.
 void handle_change_string_value_event(const isobus::VirtualTerminalClient::VTChangeStringValueEvent& event) {
+    for (int channel = 1; channel <= config::nvs_store::kChannelCount; ++channel) {
+        if (event.objectID == object_pool_ids::config_name_input_id(channel)) {
+            if (config::nvs_store::set_channel_name(channel, event.value)) {
+                ESP_LOGI(kTag, "Channel %d renamed to \"%s\"", channel,
+                         config::nvs_store::get_channel_name(channel).c_str());
+            } else {
+                ESP_LOGE(kTag, "Channel %d name was not saved; restoring current value", channel);
+            }
+            update_channel_name_display(channel);
+            return;
+        }
+    }
+
     if (event.objectID != object_pool_ids::kWifiPasswordInput) {
         return;
     }
@@ -303,11 +363,8 @@ void set_interlock_state(int channel, bool di_active) {
                    : isobus::VirtualTerminalClient::FillType::NoFill,
         kColourBlack, isobus::NULL_OBJECT_ID);
 
-    // "!" marks the channel as disabled directly on its own Data Mask
-    // label, so it's obvious at a glance why a channel won't respond,
-    // without needing to look at the (smaller, further away) DI indicator.
-    std::string label = "R" + std::to_string(channel) + (di_active ? "!" : "");
-    g_vt_client->send_change_string_value(object_pool_ids::relay_label_id(channel), label);
+    // "!" marks the channel as disabled directly on its own label.
+    update_channel_label(channel);
 }
 
 void init(std::shared_ptr<isobus::InternalControlFunction> internal_ecu) {
@@ -409,6 +466,7 @@ void resync_display() {
         apply_relay_state(ch, io::relay_driver::get_relay(ch));
         set_interlock_state(ch, automation::interlock::is_disabled(ch));
     }
+    update_all_channel_name_outputs();
     g_vt_client->send_change_fill_attributes(
         object_pool_ids::kOverrideCheckboxFillAttr,
         g_momentary_override_safety_enabled ? isobus::VirtualTerminalClient::FillType::FillWithSpecifiedColourInFillColourAttribute

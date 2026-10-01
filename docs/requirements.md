@@ -64,7 +64,8 @@ Status legend: 🎯 target for MVP · 🧊 stretch/later · ❌ out of scope
   set, shown on the VT (channels 1–8 share one relay pictogram + number,
   per [vt-ui-design.md](vt-ui-design.md#icon-design-guidelines)).
 - 🎯 **F14.** Names/icons persist across power cycles and firmware updates
-  (config migration story needed once the schema stabilizes).
+  (config migration story needed once the schema stabilizes). Channel names
+  are persisted in NVS; icon persistence remains future work.
 
 ### Power & electrical
 

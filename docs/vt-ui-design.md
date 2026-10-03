@@ -164,7 +164,8 @@ regardless of which SKM page is active) — mirrors `net::wifi_ap.hpp`
   first boot ([roadmap.md](roadmap.md#phase-7--wifi-ap--ota)) and this
   panel is what turns "read it off a serial log once during setup" into
   "read *or change* it from the cab any time," rather than trading that
-  security property away for convenience.
+  security property away for convenience. Changes persist in the `wifi_ap`
+  NVS namespace through the queued internal-RAM NVS worker.
 - **IP** — read-only text, always `192.168.4.1` (ESP-IDF's fixed
   AP-mode default).
 - **Clients** — read-only text, `"Clients: N"`, refreshed roughly every
@@ -226,6 +227,8 @@ momentary AUX-N designators at runtime. Toggle labels stay underlined, and a
 disabled channel's Data Mask label retains the `!` suffix. A VT that keeps an
 old AUX-N assignment-list designator may need its object pool refreshed or a
 reconnect; the firmware reapplies saved names after every pool upload/boot.
+The VT event handler queues each rename to a dedicated internal-RAM FreeRTOS
+worker; NVS writes do not run in the VT/CAN thread.
 
 The "Momentary Override Safety" checkbox is separate from channel
 configuration and is **never persisted**; it always remains false at boot.
@@ -293,6 +296,14 @@ All 17 are advertised unconditionally; whether any physical joystick/armrest
 button actually gets mapped to one is entirely up to the tractor's own
 native AUX-N assignment menu (see [isobus-protocol.md](isobus-protocol.md#auxiliary-control--aux-n-iso-11783-6-annex--iso-11783-7)).
 Our only job is to publish 17 distinctly-iconed, correctly-typed functions.
+
+Preferred assignments are persisted in the versioned `aux_pref` NVS blob,
+scoped by the VT server NAME, and re-advertised after reconnect or reboot.
+The persisted records use the stable AUX-N function object IDs (1501–1508,
+1521–1528, and 1560), so editing a channel's displayed label or re-uploading
+the object pool does not change its saved assignment. The AUX worker has a
+dedicated internal-RAM FreeRTOS stack. `POST /api/aux/clear` removes stored
+preferences for the currently connected VT.
 
 **Type 2, not Type 1:** AgIsoStack++'s own object-pool parser
 (`isobus_virtual_terminal_working_set_base.cpp`) logs that

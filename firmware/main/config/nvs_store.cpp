@@ -6,6 +6,7 @@
 #include <mutex>
 #include <string>
 
+#include "config/nvs_write_queue.hpp"
 #include "esp_log.h"
 #include "nvs.h"
 
@@ -57,6 +58,8 @@ void init() {
         g_names[channel - 1] = default_name(channel);
     }
 
+    nvs_write_queue::init();
+
     nvs_handle_t handle;
     esp_err_t err = nvs_open(kNvsNamespace, NVS_READWRITE, &handle);
     if (ESP_OK != err) {
@@ -93,25 +96,13 @@ bool set_channel_name(int channel, const std::string& value) {
     }
     const std::string name = normalize_name(channel, value);
 
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(kNvsNamespace, NVS_READWRITE, &handle);
-    if (ESP_OK != err) {
-        ESP_LOGE(kTag, "nvs_open failed (%s), channel %d name was not saved", esp_err_to_name(err), channel);
-        return false;
-    }
     char key[8];
     std::snprintf(key, sizeof(key), "name%d", channel);
-    err = nvs_set_str(handle, key, name.c_str());
-    if (ESP_OK == err) {
-        err = nvs_commit(handle);
-    }
-    nvs_close(handle);
-    if (ESP_OK != err) {
-        ESP_LOGE(kTag, "Failed to persist channel %d name (%s)", channel, esp_err_to_name(err));
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!nvs_write_queue::enqueue_string(kNvsNamespace, key, name)) {
+        ESP_LOGE(kTag, "Channel %d name was not queued for persistence", channel);
         return false;
     }
-
-    std::lock_guard<std::mutex> lock(g_mutex);
     g_names[channel - 1] = name;
     return true;
 }

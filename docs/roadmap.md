@@ -335,30 +335,15 @@ review:
       Data Mask gets updated; neither path is more authoritative, matching
       requirement F11.
 
-**Known gap, upstream (2026-09-11):** AUX-N "preferred assignment"
-persistence isn't actually implemented in AgIsoStack++, even though the
-protocol wiring around it is. Per ISO 11783-6, a function-providing client
-(us) is supposed to remember which physical joystick/armrest input the
-operator last assigned to each of our functions, and re-announce that as
-a "preferred assignment" on every future connection, so the operator
-doesn't have to redo the assignment from the tractor's AUX-N menu every
-power cycle. `isobus_virtual_terminal_client.cpp` calls
-`send_auxiliary_functions_preferred_assignment()` at exactly the right
-protocol moments (after `LoadVersionCommand` and after
-`EndOfObjectPoolMessage` -- confirmed by the `"Sent preferred assignments
-after ..."` log lines), but that function's body is just
-`{ Function::PreferredAssignmentCommand, 0 }` next to a
-`//! @todo load preferred assignment from saved configuration` comment --
-it always announces zero preferred assignments. The save side has the
-same gap: when the VT sends an `AuxiliaryAssignmentTypeTwoCommand` with
-`storeAsPreferred` set, two more `//! @todo save preferred assignment to
-persistent configuration` comments mark where that should be written to
-non-volatile storage and never are. Net effect: every reconnect requires
-the operator to manually reassign every joystick button to our AUX-N
-functions from scratch. Not something to route around in this repo (it's
-a real gap in the library, not a workaround-able quirk of our own object
-pool) -- see the ready-to-use prompt for fixing it upstream in
-[firmware/README.md](../firmware/README.md#known-gaps-in-vendored-agisostack).
+**AUX-N preferred assignments are now persisted.** The vendored AgIsoStack++
+patch adds a repository interface to `VirtualTerminalClient`; the firmware
+stores its versioned assignment blob in the separate NVS `aux_pref`
+namespace, scoped to each VT NAME. The assignments reference stable function
+object IDs (1501–1508, 1521–1528, and 1560), not their displayed labels, so
+renaming a channel or re-uploading the object pool does not invalidate them.
+The web endpoint `POST /api/aux/clear` clears preferences for the connected
+VT. AUX assignment NVS operations run on a dedicated FreeRTOS worker with an
+internal-RAM stack.
 
 ## Phase 5 — Naming, icons, persistence
 
@@ -371,10 +356,10 @@ pool) -- see the ready-to-use prompt for fixing it upstream in
       underline and interlock `!` suffix.
 - [ ] Add a small built-in icon set (Picture Graphics) + Object Pointer
       based icon picker per channel.
-- [ ] Persist icons/AUX-N bookkeeping to NVS; reload on boot. AUX-N
-      preferred-assignment persistence specifically also needs the
-      upstream AgIsoStack++ gap noted at the end of Phase 4 fixed first --
-      there's currently nothing on our side to hook into.
+- [x] Persist preferred AUX-N assignments in NVS and reload/re-advertise
+      them for the matching VT; changing channel labels preserves their
+      stable function object IDs.
+- [ ] Persist channel icons to NVS; reload on boot.
 
 ## Phase 6 — Automation rules
 

@@ -8,7 +8,8 @@ planned module layout this will grow into.
 
 Phase 1 bring-up harness (`main/app_main.cpp` + `main/io/`), Phase 2 bus
 presence (`main/isobus/ecu_identity.cpp`), Phase 3 minimal VT presence,
-Phase 4 AUX-N (`main/isobus/vt_app.cpp` + `main/isobus/object_pool.iop`),
+Phase 4 AUX-N (`main/isobus/vt_app.cpp` + `main/isobus/object_pool.iop`,
+including preferred-assignment persistence),
 and Phase 6's first automation rule (`main/automation/interlock.cpp`) --
 Phase 5 channel-name configuration and NVS persistence are now implemented
 (icon picking remains deferred), see the roadmap. Blinks the WS2812 status
@@ -287,9 +288,9 @@ Bench-verified on real hardware (board on COM12):
   upload resets every fill/label to static defaults, but none of our state
   resets on a reconnect) -- fixed by replacing the narrower
   `send_version_info()` with a general `resync_display()` that pushes
-  everything on every fresh connection. Also documented a real gap found
-  in vendored AgIsoStack++ while looking into AUX-N assignment persistence
-  -- see [Known gaps in vendored AgIsoStack++](#known-gaps-in-vendored-agisostack)
+  everything on every fresh connection. Also closed the vendored
+  AgIsoStack++ preferred-assignment persistence gap
+  -- see [AUX-N preferred-assignment persistence](#aux-n-preferred-assignment-persistence)
   above. See
   [../docs/vt-ui-design.md](../docs/vt-ui-design.md#momentary-override-safety-checkbox)
   and [../docs/roadmap.md](../docs/roadmap.md#phase-6--automation-rules).
@@ -399,90 +400,40 @@ AgIsoStack++ is vendored as a pinned git submodule under
 plain-CMake project rather than a native IDF component -- see
 [components/AgIsoStack-plus-plus/CMakeLists.txt](components/AgIsoStack-plus-plus/CMakeLists.txt).
 
-## Known gaps in vendored AgIsoStack++
+## AUX-N preferred-assignment persistence
 
-Bugs/gaps found in the vendored library itself while building this
-project, worth fixing upstream rather than working around here. See
-[docs/roadmap.md](../docs/roadmap.md#phase-4--aux-n) for the full
-investigation trail behind each.
+Preferred AUX-N assignments are now persisted in ESP32 NVS and scoped per
+VT server NAME. The vendored AgIsoStack++ `VirtualTerminalClient` now has
+an injectable `AuxiliaryPreferredAssignmentRepository` interface; this
+firmware wires in an NVS-backed implementation in
+[`main/isobus/aux_assignment_nvs.cpp`](main/isobus/aux_assignment_nvs.cpp).
 
-**AUX-N preferred-assignment persistence is unimplemented (2026-09-11).**
-`VirtualTerminalClient` sends/receives all the right messages at all the
-right protocol moments (confirmed via the `"Sent preferred assignments
-after ..."` log lines in `isobus_virtual_terminal_client.cpp`), but three
-`//! @todo` comments mark where the actual load-from/save-to persistent
-storage should happen and never does:
+Behavior:
 
-- `send_auxiliary_functions_preferred_assignment()` (~line 1980) always
-  sends a `PreferredAssignmentCommand` announcing zero preferred
-  assignments -- `//! @todo load preferred assignment from saved
-  configuration`.
-- The `PreferredAssignmentCommand` response handler (~line 2624) doesn't
-  load the confirmed assignment into `assignedAuxiliaryInputDevices` --
-  `//! @todo load the preferred assignment into
-  parentVT->assignedAuxiliaryInputDevices`.
-- The `AuxiliaryAssignmentTypeTwoCommand` handler, in both the
-  unassign (~line 2662) and assign (~line 2690) branches, checks
-  `storeAsPreferred` and does nothing with it -- `//! @todo save preferred
-  assignment to persistent configuration`.
+- `storeAsPreferred=true` on assign stores/updates the mapping in NVS.
+- preferred unassign removes the stored mapping.
+- non-preferred assignment leaves NVS unchanged.
+- on next VT reconnect/power cycle, stored preferred mappings are loaded
+  and re-advertised in `PreferredAssignmentCommand`.
 
-Net effect: every reconnect requires the operator to manually reassign
-every joystick/armrest button to our AUX-N functions from the tractor's
-own AUX-N menu, since the client can never tell the VT what it remembers
-from last time (because it remembers nothing). Ready-to-use prompt for
-fixing this upstream, written to be handed to a fresh Claude Code session
-with no other context, working directly in a clone of
-[AgIsoStack-plus-plus](https://github.com/Open-Agriculture/AgIsoStack-plus-plus)
-(this repo's `firmware/components/AgIsoStack-plus-plus/upstream` submodule
-remote):
+Channel-name edits and VT password changes are queued to a dedicated FreeRTOS
+task with an internal-RAM stack; their VT/CAN event handlers do not perform
+flash writes. Names remain stored as `name1`–`name8` in the separate
+`channels` namespace.
 
-> I'm looking at `isobus_virtual_terminal_client.cpp` in this repo
-> (AgIsoStack++, a C++ ISOBUS/J1939 stack). AUX-N "preferred assignment"
-> support is half-implemented: the protocol messaging is all correct
-> (`send_auxiliary_functions_preferred_assignment()` is called at the
-> right moments, from `SendWorkingSetMasterMessage`'s state-machine
-> handling after both `LoadVersionCommand` and `EndOfObjectPoolMessage`),
-> but the actual persistence behind it is just three TODO comments and a
-> hardcoded empty response:
->
-> 1. `send_auxiliary_functions_preferred_assignment()` (around line 1980)
->    builds `{ Function::PreferredAssignmentCommand, 0 }` -- always zero
->    preferred assignments -- next to `//! @todo load preferred assignment
->    from saved configuration`.
-> 2. The `Function::PreferredAssignmentCommand` response handler (around
->    line 2624) has `//! @todo load the preferred assignment into
->    parentVT->assignedAuxiliaryInputDevices` and does nothing on success.
-> 3. The `Function::AuxiliaryAssignmentTypeTwoCommand` handler has two
->    `//! @todo save preferred assignment to persistent configuration`
->    spots (around lines 2662 and 2690, the unassign and assign branches)
->    gated on the incoming message's `storeAsPreferred` bit, doing
->    nothing either.
->
-> `assignedAuxiliaryInputDevices` is a
-> `std::vector<AssignedAuxiliaryInputDevice>` (see the struct in
-> `isobus_virtual_terminal_client.hpp`, holding NAME + model
-> identification code + a `std::vector<AssignedAuxiliaryFunction>` of
-> function/input/type triples) -- that's the in-memory shape; nothing
-> currently writes or reads it to storage.
->
-> Please implement real persistence behind these three TODOs. This
-> library runs on embedded targets without a filesystem as standard (this
-> project's own consumer is ESP-IDF/ESP32), so don't assume one -- design
-> a small abstraction (e.g. a virtual/injectable `AuxiliaryPreferredAssignmentRepository`
-> interface with `load()`/`save()`, or whatever fits this codebase's
-> existing patterns for injectable persistence, if it has any already --
-> check `isobus_virtual_terminal_client.hpp`'s constructors and any
-> similar interfaces first) so each platform's consumer can back it with
-> whatever it has (NVS on ESP32, a file on Linux/PC targets, etc.),
-> defaulting to a no-op/in-memory implementation so behavior for existing
-> consumers who don't wire up a real backend doesn't change. Cover it with
-> unit tests (see the existing `test/vt_client_tests.cpp` for the style
-> already used in this repo) exercising: assigning with
-> `storeAsPreferred=true` persists and is re-sent as a preferred
-> assignment on the next connection; unassigning with `storeAsPreferred`
-> removes it; assigning without `storeAsPreferred` doesn't persist.
-> Once implemented and tested, open a PR against this repo with a clear
-> description referencing these three TODO locations.
+Only AUX-N assignment configuration is persisted; relay output states are
+not persisted.
+
+### Clearing persisted AUX-N preferences
+
+Use the local web service endpoint:
+
+```sh
+curl -X POST http://192.168.4.1/api/aux/clear
+```
+
+This clears persisted preferred AUX-N assignments for the currently
+connected VT partner NAME from NVS.
 
 ## Build
 

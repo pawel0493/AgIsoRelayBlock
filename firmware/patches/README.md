@@ -102,3 +102,26 @@ would not fix this: after its timeout the client returns to
 — still permanently false here — so it would just spin there instead,
 with better logging. The two fixes are complementary: #719 makes the
 client notice, this patch makes recovery actually possible.
+
+---
+
+## 0002-vt-aux-preferred-assignment-persistence.patch
+
+**Applies to submodule commit `795aa4981992cec4ce8ea23ca36a79d50f4f9244`.**
+
+Implements persisted AUX-N preferred assignment support in
+`VirtualTerminalClient`:
+
+- adds an injectable persistence abstraction
+  (`AuxiliaryPreferredAssignmentRepository`) with safe default no-op
+  behavior when no backend is configured;
+- replaces the three AUX-N preferred-assignment TODO locations by loading,
+  saving/updating, and removing persisted records;
+- merges stored assignments into runtime AUX-N assignment state after
+  preferred-assignment confirmation so status events resolve without manual
+  reassignment;
+- adds focused unit tests in `test/vt_client_tests.cpp` for:
+  - loading persisted assignments into runtime behavior,
+  - preferred assignment persistence update,
+  - preferred removal path,
+  - non-preferred assignment no-op for persistence.

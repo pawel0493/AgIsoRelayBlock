@@ -8,6 +8,7 @@
 #include "esp_netif.h"
 #include "esp_random.h"
 #include "esp_wifi.h"
+#include "config/nvs_write_queue.hpp"
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -76,25 +77,6 @@ std::string load_or_generate_password() {
     }
     nvs_close(handle);
     return password;
-}
-
-bool persist_password(const std::string& password) {
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(kNvsNamespace, NVS_READWRITE, &handle);
-    if (ESP_OK != err) {
-        ESP_LOGE(kTag, "nvs_open failed (%s), new password won't survive a reboot", esp_err_to_name(err));
-        return false;
-    }
-    err = nvs_set_str(handle, kNvsPasswordKey, password.c_str());
-    if (ESP_OK == err) {
-        err = nvs_commit(handle);
-    }
-    nvs_close(handle);
-    if (ESP_OK != err) {
-        ESP_LOGE(kTag, "Failed to persist new AP password (%s), won't survive a reboot", esp_err_to_name(err));
-        return false;
-    }
-    return true;
 }
 
 void apply_ap_config() {
@@ -181,7 +163,9 @@ bool set_password(const std::string& password) {
         return false;
     }
     g_password = password;
-    persist_password(g_password);  // best-effort -- still applies below even if this fails, just won't survive a reboot
+    if (!config::nvs_write_queue::enqueue_string(kNvsNamespace, kNvsPasswordKey, g_password)) {
+        ESP_LOGE(kTag, "New AP password was not queued for NVS persistence");
+    }
     if (g_enabled) {
         apply_ap_config();
     }

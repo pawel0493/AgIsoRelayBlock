@@ -43,6 +43,8 @@ firmware/
 │   │   │                        Functions), VT client glue, and AUX-N input handling -- merged into one
 │   │   │                        module rather than the auxn_app.[hc]pp split originally planned here,
 │   │   │                        since both sides share the same VirtualTerminalClient event dispatcher
+│   │   ├── aux_assignment_nvs.[hc]pp — versioned NVS persistence for preferred AUX-N assignments,
+│   │   │                               performed by a dedicated internal-RAM FreeRTOS worker
 │   │   └── diagnostics.[hc]pp  — DM1 reporting -- implemented (Phase 8, F17): thin wrapper around
 │   │                             AgIsoStack++'s isobus::DiagnosticProtocol, covers VT-connection-lost
 │   │                             and relay-I2C-write-failure (the two conditions actually detectable
@@ -53,8 +55,10 @@ firmware/
 │   │                             interlock.cpp above is deliberately a fixed special case,
 │   │                             not built on top of a general schema, until one is needed)
 │   ├── config/
-│   │   └── nvs_store.[hc]pp    — per-channel name persistence in the `channels` NVS namespace;
-│   │                             icon/rules persistence remains future work
+│   │   ├── nvs_store.[hc]pp        — per-channel name persistence in the `channels` NVS namespace;
+│   │   │                             uses nvs_write_queue for internal-RAM FreeRTOS worker writes;
+│   │   │                             icon/rules persistence remains future work
+│   │   └── nvs_write_queue.[hc]pp  — queued string writes shared by channel names and VT AP-password edits
 │   └── net/                    — implemented (Phase 7), under slightly different names than first planned:
 │       ├── wifi_ap.[hc]pp      — always-on-by-default SoftAP (AgIsoBlock-XXXX), NVS-persisted random
 │       │                        password (editable from the VT panel, see vt-ui-design.md), no STA join
@@ -110,15 +114,15 @@ sequenceDiagram
     Bus->>VT: state reflected on screen
 ```
 
-## Configuration & persistence model (planned)
+## Configuration & persistence model
 
 Stored in NVS, one namespace per concern:
 
-- `channels`: per-channel `{name, icon_id, aux_function_enabled}`; `name`
-  is implemented by `config/nvs_store.[hc]pp` and defaults to `R1`–`R8`.
-- `auxn`: assignment bookkeeping as required by the AUX-N preferred
-  assignment mechanism (mostly VT/terminal-managed, but persisted locally
-  so behavior survives reboot without re-teaching)
+- `channels`: per-channel `{name, icon_id}`; `name` is implemented by
+  `config/nvs_store.[hc]pp` and defaults to `R1`–`R8`.
+- `aux_pref`: versioned preferred AUX-N assignment records, scoped by VT
+  NAME and kept separate from channel names. Object IDs identify the
+  assignments, so changing displayed channel labels does not invalidate them.
 - `rules`: automation rules as `{input_channel, trigger (rising/falling/level), output_channel, action (toggle/on/off/pulse)}`
 - `system`: device instance number, last-known working NAME bits, and any
   user-visible identification fields shown on the VT.

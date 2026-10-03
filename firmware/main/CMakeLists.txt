@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "app_main.cpp"
         "config/nvs_store.cpp"
+        "config/nvs_write_queue.cpp"
         "io/i2c_bus.cpp"
         "io/status_led.cpp"
         "io/relay_driver.cpp"
@@ -11,6 +12,7 @@ idf_component_register(
         "io/buzzer_driver.cpp"
         "isobus/ecu_identity.cpp"
         "isobus/vt_app.cpp"
+        "isobus/aux_assignment_nvs.cpp"
         "isobus/diagnostics.cpp"
         "automation/interlock.cpp"
         "net/wifi_ap.cpp"

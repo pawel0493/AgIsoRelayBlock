@@ -77,4 +77,9 @@ bool set_relay_remote(int channel, bool state);
 // resync_display() on every fresh VT connection.
 void refresh_wifi_client_count();
 
+// Clears persisted preferred AUX-N assignments for the currently connected
+// VT partner (if any) from NVS. Returns true when cleared (or nothing to
+// clear), false on storage errors.
+bool clear_preferred_aux_assignments();
+
 }  // namespace iso::vt_app

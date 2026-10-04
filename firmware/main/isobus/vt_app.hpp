@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 
 #include "isobus/isobus/can_internal_control_function.hpp"
 
@@ -81,5 +82,12 @@ void refresh_wifi_client_count();
 // VT partner (if any) from NVS. Returns true when cleared (or nothing to
 // clear), false on storage errors.
 bool clear_preferred_aux_assignments();
+
+// Fills json with the persisted preferred AUX-N assignments of the
+// currently connected VT (GET /api/aux): {"vtConnected":bool,"vtName":"0x..",
+// "rememberAll":bool,"records":[{"deviceName","modelId","functionObjectId",
+// "inputObjectId","functionType"}]}. NAMEs are hex strings (64-bit values do
+// not fit a JSON number). Returns false only if the VT client is not started.
+bool get_preferred_aux_assignments_json(std::string& json);
 
 }  // namespace iso::vt_app

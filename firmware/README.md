@@ -410,11 +410,53 @@ firmware wires in an NVS-backed implementation in
 
 Behavior:
 
-- `storeAsPreferred=true` on assign stores/updates the mapping in NVS.
-- preferred unassign removes the stored mapping.
-- non-preferred assignment leaves NVS unchanged.
-- on next VT reconnect/power cycle, stored preferred mappings are loaded
-  and re-advertised in `PreferredAssignmentCommand`.
+- `storeAsPreferred=true` on assign stores/updates the mapping in NVS
+  (unchanged behavior).
+- **Remember-all mode** (default ON, `CONFIG_AUX_REMEMBER_ALL_ASSIGNMENTS`,
+  `idf.py menuconfig` → *AgIsoRelayBlock*): every successful assignment made
+  from the VT's AUX-N menu is stored even if the VT did not set the
+  "preferred" bit (many terminals never do), and un-assigning a single
+  function removes its entry. "Unassign all" only clears NVS when the VT sets
+  the preferred bit. With the option off, non-preferred assignments leave NVS
+  unchanged.
+- on next VT reconnect/power cycle, stored mappings are loaded and
+  re-advertised in `PreferredAssignmentCommand` (0x22), sent after
+  `LoadVersion` and after `EndOfObjectPool`; they are merged into the runtime
+  state when the VT answers "OK".
+- Records are matched on a **stable VT key**: the VT NAME without the ECU
+  instance, function instance, device-class instance and
+  arbitrary-address-capable bits, so a changed instance number does not hide
+  the stored entries.
+- Records are kept in a RAM cache; changes are written by the internal-RAM
+  worker task (coalesced), so the VT/CAN thread never waits for flash.
+
+`PreferredAssignmentCommand` layout (ISO 11783-6 Auxiliary Control Type 2):
+`0x22`, number of input units, then per unit: NAME (8 B, little endian),
+Model Identification Code (2 B), number of assignments (1 B), then per
+assignment function object ID (2 B) + input object ID (2 B). Messages over 8
+bytes go out via the transport protocol. (Earlier revisions sent a flat
+13-byte record per assignment, which did not match this layout. No reference
+implementation was available to compare against and it has not been verified
+on a bench VT -- the VT's answer is logged, see below.)
+
+### Logs to watch (`idf.py monitor`)
+
+- `AUX-N: remember every successful assignment = ON|OFF`
+- `[AUX-N]: Assignment command: device NAME=… function=… input=… type=…
+  storeAsPreferred=0|1 storeAll=0|1` — every assign/unassign the VT sends.
+- `[AUX-N]: Persist assignment … -> store OK|FAILED`, `Remove persisted
+  assignment …`, `Clear all persisted assignments …`
+- `aux_pref_nvs: saved N preferred assignment record(s) to NVS -> OK|FAILED`
+  (plus `nvs_open` / `nvs_set_blob` / `nvs_commit failed: …` on errors)
+- After a reboot: `aux_pref_nvs: loaded N … from NVS`, `load: N record(s) for
+  VT NAME …`, `Sending preferred assignments to VT: N record(s)`,
+  `Preferred Assignment OK` (or `Preferred Assignment Error …`), `Merging N
+  persisted …`.
+
+If you see `Assignment command … storeAsPreferred=0` followed by `Persist
+assignment … store OK` and, after reboot, `load: 0 record(s)`, the VT NAME
+changed in a way the stable key does not cover — compare the two `VT NAME`
+values in the log.
 
 Channel-name edits and VT password changes are queued to a dedicated FreeRTOS
 task with an internal-RAM stack; their VT/CAN event handlers do not perform
@@ -434,6 +476,30 @@ curl -X POST http://192.168.4.1/api/aux/clear
 
 This clears persisted preferred AUX-N assignments for the currently
 connected VT partner NAME from NVS.
+
+### Inspecting persisted AUX-N assignments
+
+```sh
+curl http://192.168.4.1/api/aux
+```
+
+Returns the records stored for the currently connected VT, e.g.
+`{"vtConnected":true,"rememberAll":true,"vtName":"0xa0001d00afe00000","records":[{"deviceName":"0x…","modelId":1,"functionObjectId":1501,"inputObjectId":7,"functionType":2}]}`.
+An empty `records` array right after assigning means nothing was saved --
+check the logs above.
+
+## VT soft key / CFG diagnostics
+
+The CFG key is SK1 on soft key page 3 (`>>` twice), and also a touch button on
+the main screen. At every VT connection the log prints `VT reports: data mask
+WxH px, soft key WxH px, N virtual / M physical soft keys`; each key/button
+press prints `VT soft key event: objectID=… keyEvent=…`; the VT's answer to a
+mask change prints `VT confirms soft key mask …` / `VT confirms active mask …
+missingObjects=… maskOrChildHasErrors=… anyOtherError=…`, and entering CFG logs
+`SK CFG: open channel-name configuration … -> sent` followed by `CFG mask is
+active on the VT`. If the CFG key is missing, check those lines for
+`maskOrChildHasErrors=1`. The pool is auto-scaled
+(`set_object_pool_scaling(0, 480, 60)`).
 
 ## Build
 

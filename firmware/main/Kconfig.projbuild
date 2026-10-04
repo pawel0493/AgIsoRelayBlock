@@ -1,0 +1,13 @@
+menu "AgIsoRelayBlock"
+
+    config AUX_REMEMBER_ALL_ASSIGNMENTS
+        bool "Remember every successful AUX-N assignment"
+        default y
+        help
+            Persist every AUX-N assignment accepted from the VT's AUX-N menu,
+            even when the VT does not set the "store as preferred" bit, and
+            remove the stored entry when a function is unassigned. When
+            disabled, only assignments flagged as preferred by the VT are
+            persisted.
+
+endmenu

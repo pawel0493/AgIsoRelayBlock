@@ -120,7 +120,20 @@ Implements persisted AUX-N preferred assignment support in
 - merges stored assignments into runtime AUX-N assignment state after
   preferred-assignment confirmation so status events resolve without manual
   reassignment;
+- adds `set_auxiliary_store_all_assignments(bool)`: persist every successful
+  assignment (and remove on single-function unassign) even without the
+  `storeAsPreferred` bit;
+- sends the Preferred Assignment (0x22) message as: number of units, then per
+  unit NAME (8 B), model identification code (2 B), count (1 B), and
+  function ID + input ID (2 B each) per assignment, built by
+  `build_preferred_assignment_message()` (>8 B goes via the transport
+  protocol);
+- logs every assignment command (device NAME, function/input ID, type,
+  `storeAsPreferred`) and the result of every repository
+  store/remove/clear at INFO level;
+- fixes use of an invalidated iterator when un-assigning a function;
 - adds focused unit tests in `test/vt_client_tests.cpp` for:
+  - the 0x22 message layout and the store-all mode,
   - loading persisted assignments into runtime behavior,
   - preferred assignment persistence update,
   - preferred removal path,

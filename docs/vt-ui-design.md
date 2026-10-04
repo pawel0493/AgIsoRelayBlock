@@ -101,7 +101,7 @@ on the screen.
 ## "Momentary Override Safety" checkbox
 
 A single, device-wide checkbox (unfilled/unchecked by default) on the
-Data Mask, below the relay grid, toggled by SK2 on SKM page 3 (terse "OR"
+Data Mask, below the relay grid, toggled by SK3 on SKM page 3 (terse "OR"
 label — see `gen_object_pool.py`'s comment for why, and why it lives on
 page 3 alongside the WiFi panel below rather than page 2's per-channel
 momentary keys; the full name is the label printed next to the checkbox
@@ -141,7 +141,7 @@ regardless of which SKM page is active) — mirrors `net::wifi_ap.hpp`
 (Phase 7, [roadmap.md](roadmap.md#phase-7--wifi-ap--ota)):
 
 - A checkbox, same convention as the override checkbox above (unfilled =
-  off), labeled **"WiFi AP Enabled"**, toggled by SK1 on SKM page 3
+  off), labeled **"WiFi AP Enabled"**, toggled by SK2 on SKM page 3
   (terse **"AP"** label). Checked by default (the AP comes up
   unconditionally at boot); unchecking it tears down the SoftAP entirely
   — no local web UI/OTA/relay-control reachability at all until it's
@@ -192,27 +192,37 @@ back-key mask (see below).
 
 | Key | Action | Icon |
 |---|---|---|
-| SK1–SK8 | Momentary-override relay channel 1–8 (see [AUX-N functions](#aux-n-functions-17-total) below for exactly what this does) | Configured channel name, plain (no underline) — reuses the same label object as that channel's Data Mask indicator |
+| SK1–SK8 | Momentary-override relay channel 1–8 (see [AUX-N functions](#aux-n-functions-17-total) below for exactly what this does) | Configured channel name (max 7 characters), plain (no underline) — own key-sized label object (not the Data Mask label) |
 | SK9 | Switch back to page 1 | Text label **"<<"** |
 | SK10 | Switch to page 3 | Text label **">>"** — reuses page 1's own SK10 label object (identical meaning) |
 
-**Page 3 "WiFi/Settings SKM" (3 keys):**
+**Page 3 "WiFi/Settings SKM" (4 keys):**
 
 | Key | Action | Icon |
 |---|---|---|
-| SK1 | Toggle the WiFi panel's "AP Enabled" checkbox | Text label **"AP"** |
-| SK2 | Toggle the "Momentary Override Safety" checkbox | Text label **"OR"** |
-| SK3 | Open the channel-name configuration screen | Text label **"CFG"** |
+| SK1 | Open the channel-name configuration screen | Text label **"CFG"** |
+| SK2 | Toggle the WiFi panel's "AP Enabled" checkbox | Text label **"AP"** |
+| SK3 | Toggle the "Momentary Override Safety" checkbox | Text label **"OR"** |
 | SK9 | Switch back to page 2 | Text label **"<<"** — reuses page 2's own SK9 label object |
 
-Channel labels use a compact 12×16 font so names up to 8 characters fit in
-the same Data Mask and soft-key label widths, including the Data Mask's
-additional interlock `!` suffix. Toggle labels remain
-underlined; momentary labels remain plain.
+The pool is designed for a **480 px wide Data Mask and 60 px soft keys**;
+`vt_app.cpp` calls `set_object_pool_scaling(0, 480, 60)` so AgIsoStack++
+rescales it to the connected VT. Data Mask channel labels use a 12×16 font
+(8 characters plus the interlock `!` suffix). Everything on a soft key or in
+an AUX-N assignment list is at most 56 px wide (label objects are 56 px
+inside a 60 px key): channel names use an 8×12 font and are shortened to
+**7 characters** there (the full 8-character name stays on the Data Mask and
+in the CFG view); captions such as "CFG", "AP", ">>" use a 16×24 font.
+Toggle labels remain underlined; momentary labels remain plain.
+
+**Reaching CFG:** it is SK1 on page 3 (press `>>` twice from page 1). A
+second entry point is a touch **CFG** Button on the main Data Mask (next to
+the override checkbox, effective on touch VTs) with the hint text
+`>> >> CFG`.
 
 ## Channel-name configuration
 
-Press **CFG** (SK3 on page 3) to switch to the dedicated configuration Data
+Press **CFG** (SK1 on page 3, or the CFG touch button on the main screen) to switch to the dedicated configuration Data
 Mask. It lists all eight channels as editable Input String fields, with a
 back key at SK9 returning to the main Data Mask. The VT's on-screen keyboard
 edits each channel directly; clearing a field restores its default `R{n}`
@@ -285,7 +295,7 @@ value straight through.
 | # | Function | Type 2 `FunctionType` | Behavior | Label/Icon |
 |---|---|---|---|---|
 | 1–8 | Relay channel 1–8, toggle | `BooleanNonLatchingIncreaseValue` (2) | Firmware toggles the relay on each press (rising edge), ignores release — a momentary button acts like a latch | Configured channel name, **underlined** |
-| 9–16 | Relay channel 1–8, momentary override | `BooleanNonLatchingIncreaseValue` (2) | Firmware saves the relay's current state and inverts it on press; restores the saved state on release — see the note above | Configured channel name, plain (no underline) — reuses the same label object as that channel's Data Mask indicator, and shared with the same-numbered key on SKM page 2 |
+| 9–16 | Relay channel 1–8, momentary override | `BooleanNonLatchingIncreaseValue` (2) | Firmware saves the relay's current state and inverts it on press; restores the saved state on release — see the note above | Configured channel name (max 7 characters), plain (no underline) — own key-sized label object (not the Data Mask label), and shared with the same-numbered key on SKM page 2 |
 | 17 | Buzzer | `BooleanNonLatchingIncreaseValue` (2) | Edge-triggered pulse on rising edge; matches SK9's pulse behavior | Own dedicated **"BZ"** label |
 
 See `handle_aux_function_event` in
@@ -303,7 +313,9 @@ The persisted records use the stable AUX-N function object IDs (1501–1508,
 1521–1528, and 1560), so editing a channel's displayed label or re-uploading
 the object pool does not change its saved assignment. The AUX worker has a
 dedicated internal-RAM FreeRTOS stack. `POST /api/aux/clear` removes stored
-preferences for the currently connected VT.
+preferences for the currently connected VT; `GET /api/aux` lists them.
+See [firmware/README.md](../firmware/README.md#aux-n-preferred-assignment-persistence)
+for the remember-all mode, the logs, and the stable VT key.
 
 **Type 2, not Type 1:** AgIsoStack++'s own object-pool parser
 (`isobus_virtual_terminal_working_set_base.cpp`) logs that

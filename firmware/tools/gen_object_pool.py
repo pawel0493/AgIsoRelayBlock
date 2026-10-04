@@ -5,8 +5,8 @@ Data Mask with an 8-in-a-row relay state indicator strip, a "Momentary
 Override Safety" checkbox, a WiFi status/control panel, three Soft Key Mask
 pages chained via next/back keys (page 1: SK1-SK8 relay toggles + SK9 buzzer
 + SK10 next-page; page 2: SK1-SK8 momentary override + SK9 back + SK10
-next-page; page 3: SK1 WiFi AP toggle + SK2 override-safety toggle + SK3
-configuration + SK9 back), and a dedicated configuration mask, plus 17
+next-page; page 3: SK1 configuration + SK2 WiFi AP toggle + SK3
+override-safety toggle + SK9 back), and a dedicated configuration mask, plus 17
 Auxiliary Function Type 2 objects (a toggle + a momentary-override variant
 per relay channel, plus one momentary buzzer function) for AUX-N
 joystick/armrest assignment.
@@ -46,6 +46,7 @@ T_OUTPUT_RECTANGLE = 14
 T_FONT_ATTRIBUTES = 23
 T_LINE_ATTRIBUTES = 24
 T_FILL_ATTRIBUTES = 25
+T_BUTTON = 6
 T_AUXILIARY_FUNCTION_TYPE_2 = 31
 
 # AuxiliaryFunctionType2::FunctionType (ISO 11783-6:2018 table J.5) values.
@@ -79,6 +80,14 @@ ID_CONFIG_SOFTKEY = 1268
 ID_CONFIG_SOFTKEY_LABEL = 1269
 ID_CONFIG_BACK = 1270
 ID_CONFIG_BACK_LABEL = 1271
+# Second entry point to the configuration view: a touch Button on the main
+# Data Mask (soft key CFG is on page 3, two ">>" presses away) plus a text
+# hint. Soft key labels for page 2 and the AUX-N momentary variants get their
+# own label objects so they can be sized for a ~60 px key independently of
+# the wider Data Mask labels.
+ID_CONFIG_BUTTON = 1272
+ID_CONFIG_BUTTON_LABEL = 1273
+ID_CONFIG_HINT = 1148
 CHANNEL_NAME_MAX_CHARS = 8
 
 # WiFi status/control panel (Data Mask, visible on every SKM page, same as
@@ -104,10 +113,21 @@ ID_SOFTKEY_NEXT_3 = 1266  # page 2 -> page 3
 ID_SOFTKEY_BACK_3 = 1267  # page 3 -> page 2
 
 ID_FONT = 1900
-ID_FONT_LARGE = 1901  # 32x32 -- Data Mask indicators + soft key labels
+ID_FONT_LARGE = 1901  # 32x32 -- kept for pool compatibility, no longer referenced (too wide for ~60 px keys)
 ID_FONT_NAME = 1902  # 12x16 -- fits editable channel names in existing label widths
 ID_FONT_NAME_UNDERLINE = 1903  # same, underlined -- marks channel toggle variants
+ID_FONT_KEY = 1904  # 8x12 -- channel names on soft keys / AUX-N lists (<= 7 chars in 56 px)
+ID_FONT_KEY_UNDERLINE = 1905  # same, underlined -- toggle variants
+ID_FONT_KEY_LARGE = 1906  # 16x24 -- 1-3 char key captions (BZ, >>, <<, AP, OR, CFG)
 ID_LINE_ATTR = 1910
+
+# A typical VT soft key designator is ~60 px wide. Key label objects are sized
+# 56 px (2 px offset on both sides), so 8x12 text fits at most 7 characters;
+# longer channel names are shortened on keys (full name stays on the Data Mask).
+KEY_LABEL_WIDTH = 56
+KEY_LABEL_HEIGHT = 28
+KEY_NAME_LABEL_HEIGHT = 16
+KEY_NAME_MAX_CHARS = 7
 
 FONT_STYLE_UNDERLINED = 0x04  # FontAttributes::FontStyleBits::Underlined bit
 
@@ -166,6 +186,14 @@ def softkey_label_id(key_number):
 
 def softkey2_id(channel):  # channel: 1-8, momentary override page
     return 1250 + channel
+
+
+def softkey2_label_id(channel):
+    return 1280 + channel
+
+
+def aux_momentary_label_id(channel):
+    return 1550 + channel
 
 
 ID_SOFTKEY_BACK = 1260
@@ -326,6 +354,23 @@ def make_key(object_id, key_code, children):
     return object_header(object_id, T_KEY) + body
 
 
+def make_button(object_id, width, height, key_code, children):
+    # Macro count is a header field (0 below); no trailing macro byte.
+    # Layout per isobus_virtual_terminal_working_set_base.cpp's Button case:
+    # width, height, background, border, key code, options, children, macros.
+    background_colour = COLOUR_WHITE
+    border_colour = COLOUR_BLACK
+    options = 0
+    body = (
+        u16(width)
+        + u16(height)
+        + bytes([background_colour, border_colour, key_code, options])
+        + bytes([len(children), 0])
+        + b"".join(child_ref(oid, x, y) for oid, x, y in children)
+    )
+    return object_header(object_id, T_BUTTON) + body
+
+
 def make_auxiliary_function_type2(object_id, function_type, children):
     # Not a child of the Working Set or any mask -- per
     # WorkingSet::get_is_valid() in AgIsoStack++, Auxiliary Function
@@ -366,6 +411,9 @@ def build_pool():
     objects.append(make_font_attributes(ID_FONT_LARGE, size=7))  # 32x32
     objects.append(make_font_attributes(ID_FONT_NAME, size=3))  # 12x16
     objects.append(make_font_attributes(ID_FONT_NAME_UNDERLINE, size=3, style=FONT_STYLE_UNDERLINED))
+    objects.append(make_font_attributes(ID_FONT_KEY, size=2))  # 8x12
+    objects.append(make_font_attributes(ID_FONT_KEY_UNDERLINE, size=2, style=FONT_STYLE_UNDERLINED))
+    objects.append(make_font_attributes(ID_FONT_KEY_LARGE, size=5))  # 16x24
     objects.append(make_line_attributes(ID_LINE_ATTR, colour=COLOUR_BLACK, width=1))
 
     # --- Data Mask contents: title + relay indicators, 4-per-row x 2 rows
@@ -449,6 +497,17 @@ def build_pool():
     data_mask_children.append((ID_OVERRIDE_CHECKBOX_RECT, LEFT_MARGIN, override_y))
     data_mask_children.append((ID_OVERRIDE_CHECKBOX_LABEL, LEFT_MARGIN + CHECKBOX_SIZE + 8, override_y + 6))
 
+    # --- Second entry point to the channel-name configuration view: a touch
+    # Button (VTs without a touchscreen simply can't press it) plus a text
+    # hint pointing at the soft key route (SK1 on page 3, two ">>" presses).
+    CFG_BUTTON_X = 300
+    objects.append(make_output_string(ID_CONFIG_BUTTON_LABEL, 60, 24, "CFG", font_id=ID_FONT_KEY_LARGE))
+    objects.append(make_button(ID_CONFIG_BUTTON, 80, 32, key_code=11,
+                               children=[(ID_CONFIG_BUTTON_LABEL, 8, 4)]))
+    objects.append(make_output_string(ID_CONFIG_HINT, 160, 12, ">> >> CFG".ljust(20), font_id=ID_FONT))
+    data_mask_children.append((ID_CONFIG_BUTTON, CFG_BUTTON_X, override_y - 4))
+    data_mask_children.append((ID_CONFIG_HINT, CFG_BUTTON_X, override_y + 34))
+
     # --- WiFi status/control panel, below the override checkbox. Reached
     # via SKM page 3 (SK1 there toggles the AP on/off), but the display
     # itself -- like the override checkbox above -- lives on the Data Mask
@@ -509,30 +568,33 @@ def build_pool():
         # SK9 (buzzer) and SK10 (page nav) have no such distinction to
         # make, so no underline.
         if k == 9:
-            label_text, font_id = "BZ", ID_FONT_LARGE
+            label_text, font_id, label_height = "BZ", ID_FONT_KEY_LARGE, KEY_LABEL_HEIGHT
         elif k == 10:
-            label_text, font_id = ">>", ID_FONT_LARGE
+            label_text, font_id, label_height = ">>", ID_FONT_KEY_LARGE, KEY_LABEL_HEIGHT
         else:
-            label_text, font_id = "R{}".format(k).ljust(CHANNEL_NAME_MAX_CHARS), ID_FONT_NAME_UNDERLINE
+            label_text = "R{}".format(k).ljust(KEY_NAME_MAX_CHARS)
+            font_id, label_height = ID_FONT_KEY_UNDERLINE, KEY_NAME_LABEL_HEIGHT
 
-        label_width = 100 if k <= 8 else RECT_SIZE
-        objects.append(make_output_string(label_id, label_width, LABEL_HEIGHT, label_text, font_id=font_id))
+        objects.append(make_output_string(label_id, KEY_LABEL_WIDTH, label_height, label_text, font_id=font_id))
         objects.append(make_key(key_id, key_code=k, children=[(label_id, 2, 2)]))
         key_ids.append(key_id)
 
     objects.append(make_soft_key_mask(key_ids))
 
     # --- Soft Key Mask page 2: SK1-SK8 momentary-override + a back key.
-    # Reuses each channel's own Data Mask "R{n}" label (plain, no
-    # underline -- same convention as the AUX-N momentary variant) rather
-    # than creating duplicate label objects.
+    # Own key-sized "R{n}" label per channel (plain, no underline -- same
+    # convention as the AUX-N momentary variant); the Data Mask label is too
+    # wide (and changes with the "!" marker) to share with a ~60 px key.
     page2_key_ids = []
     for ch in range(1, 9):
         key_id = softkey2_id(ch)
-        objects.append(make_key(key_id, key_code=ch, children=[(relay_label_id(ch), 2, 2)]))
+        label_id = softkey2_label_id(ch)
+        objects.append(make_output_string(label_id, KEY_LABEL_WIDTH, KEY_NAME_LABEL_HEIGHT,
+                                          "R{}".format(ch).ljust(KEY_NAME_MAX_CHARS), font_id=ID_FONT_KEY))
+        objects.append(make_key(key_id, key_code=ch, children=[(label_id, 2, 2)]))
         page2_key_ids.append(key_id)
 
-    objects.append(make_output_string(ID_SOFTKEY_BACK_LABEL, RECT_SIZE, LABEL_HEIGHT, "<<", font_id=ID_FONT_LARGE))
+    objects.append(make_output_string(ID_SOFTKEY_BACK_LABEL, KEY_LABEL_WIDTH, KEY_LABEL_HEIGHT, "<<", font_id=ID_FONT_KEY_LARGE))
     objects.append(make_key(ID_SOFTKEY_BACK, key_code=9, children=[(ID_SOFTKEY_BACK_LABEL, 2, 2)]))
     page2_key_ids.append(ID_SOFTKEY_BACK)
 
@@ -545,28 +607,29 @@ def build_pool():
 
     objects.append(make_soft_key_mask(page2_key_ids, mask_id=ID_SOFT_KEY_MASK_2))
 
-    # --- Soft Key Mask page 3: WiFi status/control panel (see the Data
-    # Mask objects above) -- SK1 toggles the "WiFi AP Enabled" checkbox,
-    # SK2 toggles "Momentary Override Safety" (moved here from page 2's
-    # SK10 -- a device-wide setting fits more naturally alongside other
-    # device-wide settings than next to per-channel momentary keys), SK3
-    # opens the channel-name configuration view, and SK9 goes back to page 2.
-    objects.append(make_output_string(ID_SOFTKEY_WIFI_TOGGLE_LABEL, RECT_SIZE, LABEL_HEIGHT, "AP", font_id=ID_FONT_LARGE))
-    objects.append(make_key(ID_SOFTKEY_WIFI_TOGGLE, key_code=1, children=[(ID_SOFTKEY_WIFI_TOGGLE_LABEL, 2, 2)]))
+    # --- Soft Key Mask page 3: SK1 opens the channel-name configuration
+    # view (first position so it is the easiest key to find after the two
+    # ">>" presses), SK2 toggles the "WiFi AP Enabled" checkbox (WiFi
+    # status/control panel -- see the Data Mask objects above), SK3 toggles
+    # "Momentary Override Safety" (a device-wide setting fits alongside other
+    # device-wide settings rather than next to per-channel momentary keys),
+    # and the last key goes back to page 2.
+    objects.append(make_output_string(ID_CONFIG_SOFTKEY_LABEL, KEY_LABEL_WIDTH, KEY_LABEL_HEIGHT, "CFG", font_id=ID_FONT_KEY_LARGE))
+    objects.append(make_key(ID_CONFIG_SOFTKEY, key_code=1, children=[(ID_CONFIG_SOFTKEY_LABEL, 2, 2)]))
 
-    objects.append(make_output_string(ID_SOFTKEY_OVERRIDE_LABEL, RECT_SIZE, LABEL_HEIGHT, "OR", font_id=ID_FONT_LARGE))
-    objects.append(make_key(ID_SOFTKEY_OVERRIDE, key_code=2, children=[(ID_SOFTKEY_OVERRIDE_LABEL, 2, 2)]))
+    objects.append(make_output_string(ID_SOFTKEY_WIFI_TOGGLE_LABEL, KEY_LABEL_WIDTH, KEY_LABEL_HEIGHT, "AP", font_id=ID_FONT_KEY_LARGE))
+    objects.append(make_key(ID_SOFTKEY_WIFI_TOGGLE, key_code=2, children=[(ID_SOFTKEY_WIFI_TOGGLE_LABEL, 2, 2)]))
 
-    objects.append(make_output_string(ID_CONFIG_SOFTKEY_LABEL, 100, LABEL_HEIGHT, "CFG", font_id=ID_FONT_NAME))
-    objects.append(make_key(ID_CONFIG_SOFTKEY, key_code=3, children=[(ID_CONFIG_SOFTKEY_LABEL, 2, 2)]))
+    objects.append(make_output_string(ID_SOFTKEY_OVERRIDE_LABEL, KEY_LABEL_WIDTH, KEY_LABEL_HEIGHT, "OR", font_id=ID_FONT_KEY_LARGE))
+    objects.append(make_key(ID_SOFTKEY_OVERRIDE, key_code=3, children=[(ID_SOFTKEY_OVERRIDE_LABEL, 2, 2)]))
 
     objects.append(make_key(ID_SOFTKEY_BACK_3, key_code=9, children=[(ID_SOFTKEY_BACK_LABEL, 2, 2)]))
 
     objects.append(make_soft_key_mask(
-        [ID_SOFTKEY_WIFI_TOGGLE, ID_SOFTKEY_OVERRIDE, ID_CONFIG_SOFTKEY, ID_SOFTKEY_BACK_3],
+        [ID_CONFIG_SOFTKEY, ID_SOFTKEY_WIFI_TOGGLE, ID_SOFTKEY_OVERRIDE, ID_SOFTKEY_BACK_3],
         mask_id=ID_SOFT_KEY_MASK_3))
 
-    objects.append(make_output_string(ID_CONFIG_BACK_LABEL, RECT_SIZE, LABEL_HEIGHT, "<<", font_id=ID_FONT_LARGE))
+    objects.append(make_output_string(ID_CONFIG_BACK_LABEL, KEY_LABEL_WIDTH, KEY_LABEL_HEIGHT, "<<", font_id=ID_FONT_KEY_LARGE))
     objects.append(make_key(ID_CONFIG_BACK, key_code=9, children=[(ID_CONFIG_BACK_LABEL, 2, 2)]))
     objects.append(make_soft_key_mask([ID_CONFIG_BACK], mask_id=ID_SOFT_KEY_MASK_CONFIG))
 
@@ -597,22 +660,26 @@ def build_pool():
         # read correctly. Both are declared non-latching at the protocol
         # level; only our own handling of the toggle variant differs.
         latch_label_id = aux_latch_label_id(ch)
-        objects.append(make_output_string(latch_label_id, 100, LABEL_HEIGHT,
-                                          "R{}".format(ch).ljust(CHANNEL_NAME_MAX_CHARS),
-                                          font_id=ID_FONT_NAME_UNDERLINE))
+        objects.append(make_output_string(latch_label_id, KEY_LABEL_WIDTH, KEY_NAME_LABEL_HEIGHT,
+                                          "R{}".format(ch).ljust(KEY_NAME_MAX_CHARS),
+                                          font_id=ID_FONT_KEY_UNDERLINE))
         objects.append(make_auxiliary_function_type2(
             aux_latch_function_id(ch), AUX_FUNC_NON_LATCHING_MOMENTARY,
             children=[(latch_label_id, 2, 2)]))
 
+        momentary_label_id = aux_momentary_label_id(ch)
+        objects.append(make_output_string(momentary_label_id, KEY_LABEL_WIDTH, KEY_NAME_LABEL_HEIGHT,
+                                          "R{}".format(ch).ljust(KEY_NAME_MAX_CHARS),
+                                          font_id=ID_FONT_KEY))
         objects.append(make_auxiliary_function_type2(
             aux_momentary_function_id(ch), AUX_FUNC_NON_LATCHING_MOMENTARY,
-            children=[(relay_label_id(ch), 2, 2)]))
+            children=[(momentary_label_id, 2, 2)]))
 
     # Buzzer: its own dedicated "BZ" label, sized the same generous way as
     # every other label here (the box, not text length, was what caused
     # the earlier clipping bug -- see the toggle variant's history above).
-    objects.append(make_output_string(ID_AUX_BUZZER_LABEL, RECT_SIZE, LABEL_HEIGHT,
-                                      "BZ", font_id=ID_FONT_LARGE))
+    objects.append(make_output_string(ID_AUX_BUZZER_LABEL, KEY_LABEL_WIDTH, KEY_LABEL_HEIGHT,
+                                      "BZ", font_id=ID_FONT_KEY_LARGE))
     objects.append(make_auxiliary_function_type2(
         ID_AUX_BUZZER_FUNCTION, AUX_FUNC_NON_LATCHING_MOMENTARY,
         children=[(ID_AUX_BUZZER_LABEL, 2, 2)]))
@@ -651,6 +718,10 @@ def generate_ids_header():
         "constexpr uint16_t kSoftkeyBack3 = {};".format(ID_SOFTKEY_BACK_3),
         "constexpr uint16_t kSoftkeyConfig = {};".format(ID_CONFIG_SOFTKEY),
         "constexpr uint16_t kSoftkeyConfigBack = {};".format(ID_CONFIG_BACK),
+        "// Touch Button on the main Data Mask (second entry point to the CFG view).",
+        "constexpr uint16_t kConfigButton = {};".format(ID_CONFIG_BUTTON),
+        "// Channel names are shortened to this many characters on soft keys / AUX-N lists.",
+        "constexpr uint16_t kKeyLabelMaxChars = {};".format(KEY_NAME_MAX_CHARS),
         "",
         "// WiFi status/control panel (page 3) -- see net/wifi_ap.hpp.",
         "constexpr uint16_t kSoftkeyWifiToggle = {};".format(ID_SOFTKEY_WIFI_TOGGLE),
@@ -668,6 +739,8 @@ def generate_ids_header():
         "inline uint16_t config_name_input_id(int channel) {{ return {} + channel; }}".format(ID_CONFIG_NAME_INPUT_BASE),
         "inline uint16_t softkey_label_id(int key_number) {{ return {} + key_number; }}".format(1230),
         "inline uint16_t aux_latch_label_id(int channel) {{ return {} + channel; }}".format(1540),
+        "inline uint16_t aux_momentary_label_id(int channel) {{ return {} + channel; }}".format(1550),
+        "inline uint16_t softkey2_label_id(int channel) {{ return {} + channel; }}".format(1280),
         "inline uint16_t di_fill_attr_id(int channel) {{ return {} + channel; }}".format(1930),
         "",
         "// key_number: 1-8 = relay channels (toggle), 9 = buzzer, 10 = next page",

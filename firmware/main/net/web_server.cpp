@@ -225,6 +225,16 @@ esp_err_t relay_post_handler(httpd_req_t* req) {
     return httpd_resp_send(req, "OK", HTTPD_RESP_USE_STRLEN);
 }
 
+esp_err_t aux_get_handler(httpd_req_t* req) {
+    std::string body;
+    if (!iso::vt_app::get_preferred_aux_assignments_json(body)) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_send(req, "VT client not started", HTTPD_RESP_USE_STRLEN);
+    }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, body.c_str(), static_cast<int>(body.size()));
+}
+
 esp_err_t aux_clear_post_handler(httpd_req_t* req) {
     if (iso::vt_app::clear_preferred_aux_assignments()) {
         ESP_LOGI(kTag, "web: cleared persisted preferred AUX-N assignments");
@@ -327,6 +337,7 @@ void init() {
         {"/", HTTP_GET, index_get_handler, nullptr},
         {"/api/state", HTTP_GET, state_get_handler, nullptr},
         {"/api/relay", HTTP_POST, relay_post_handler, nullptr},
+        {"/api/aux", HTTP_GET, aux_get_handler, nullptr},
         {"/api/aux/clear", HTTP_POST, aux_clear_post_handler, nullptr},
         {"/ota", HTTP_GET, ota_page_get_handler, nullptr},
         {"/ota/upload", HTTP_POST, ota_upload_post_handler, nullptr},

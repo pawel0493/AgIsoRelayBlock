@@ -22,6 +22,10 @@ constexpr uint16_t kSoftkeyNext3 = 1266;
 constexpr uint16_t kSoftkeyBack3 = 1267;
 constexpr uint16_t kSoftkeyConfig = 1268;
 constexpr uint16_t kSoftkeyConfigBack = 1270;
+// Touch Button on the main Data Mask (second entry point to the CFG view).
+constexpr uint16_t kConfigButton = 1272;
+// Channel names are shortened to this many characters on soft keys / AUX-N lists.
+constexpr uint16_t kKeyLabelMaxChars = 7;
 
 // WiFi status/control panel (page 3) -- see net/wifi_ap.hpp.
 constexpr uint16_t kSoftkeyWifiToggle = 1264;
@@ -39,6 +43,8 @@ inline uint16_t relay_label_id(int channel) { return 1120 + channel; }
 inline uint16_t config_name_input_id(int channel) { return 1320 + channel; }
 inline uint16_t softkey_label_id(int key_number) { return 1230 + key_number; }
 inline uint16_t aux_latch_label_id(int channel) { return 1540 + channel; }
+inline uint16_t aux_momentary_label_id(int channel) { return 1550 + channel; }
+inline uint16_t softkey2_label_id(int channel) { return 1280 + channel; }
 inline uint16_t di_fill_attr_id(int channel) { return 1930 + channel; }
 
 // key_number: 1-8 = relay channels (toggle), 9 = buzzer, 10 = next page

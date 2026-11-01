@@ -1,8 +1,7 @@
-# Firmware Architecture (Proposal)
+# Firmware Architecture
 
-Status: proposal, not yet implemented. Written to guide Phase 1+ of the
-[roadmap](roadmap.md); expect this to evolve once real hardware
-bring-up starts.
+Status: architecture notes, with implemented and planned modules called out
+below. Written to guide Phase 1+ of the [roadmap](roadmap.md).
 
 ## High-level decisions
 
@@ -54,8 +53,8 @@ firmware/
 │   │                             interlock.cpp above is deliberately a fixed special case,
 │   │                             not built on top of a general schema, until one is needed)
 │   ├── config/
-│   │   └── nvs_store.[hc]pp    — channel names/icons/rules persistence (not yet started -- Phase 5/6;
-│   │                             the WiFi AP password below already has its own small, separate NVS use)
+│   │   └── nvs_store.[hc]pp    — per-channel name persistence in the `channels` NVS namespace;
+│   │                             icon/rules persistence remains future work
 │   └── net/                    — implemented (Phase 7), under slightly different names than first planned:
 │       ├── wifi_ap.[hc]pp      — always-on-by-default SoftAP (AgIsoBlock-XXXX), NVS-persisted random
 │       │                        password (editable from the VT panel, see vt-ui-design.md), no STA join
@@ -68,8 +67,7 @@ firmware/
 └── CMakeLists.txt
 ```
 
-This is a proposal, not a commitment — it will be adjusted once GPIO
-mapping and AgIsoStack++'s ESP32 integration are validated on the bench.
+The module layout may evolve as remaining planned features are implemented.
 
 ## Runtime task layout (planned)
 
@@ -116,7 +114,8 @@ sequenceDiagram
 
 Stored in NVS, one namespace per concern:
 
-- `channels`: per-channel `{name, icon_id, aux_function_enabled}`
+- `channels`: per-channel `{name, icon_id, aux_function_enabled}`; `name`
+  is implemented by `config/nvs_store.[hc]pp` and defaults to `R1`–`R8`.
 - `auxn`: assignment bookkeeping as required by the AUX-N preferred
   assignment mechanism (mostly VT/terminal-managed, but persisted locally
   so behavior survives reboot without re-teaching)
@@ -132,7 +131,8 @@ String for names, Input Boolean/Numeric Value + Object Pointer for icon
 and rule pickers) so no laptop or companion app is required in the field —
 this mirrors ISOBUS Block's "no code, no app, no laptop" pitch. The
 local web UI (over WiFi AP or Ethernet) is a secondary convenience for
-bench setup and OTA only.
+bench setup and OTA; its `/api/state` response and relay table mirror the
+configured channel names read-only.
 
 ## WiFi AP & OTA (planned)
 

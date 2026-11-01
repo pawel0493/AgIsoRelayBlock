@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "app_main.cpp"
+        "config/nvs_store.cpp"
         "io/i2c_bus.cpp"
         "io/status_led.cpp"
         "io/relay_driver.cpp"

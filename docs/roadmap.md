@@ -2,7 +2,7 @@
 
 Phased plan from "empty repo" to a usable, VT-configurable ISOBUS relay
 block. Each phase should end in something demonstrable/testable before
-moving to the next. Nothing below is implemented yet.
+moving to the next. Checkboxes reflect the current implementation status.
 
 ## Phase 0 — Groundwork (docs, this pass)
 
@@ -362,23 +362,26 @@ pool) -- see the ready-to-use prompt for fixing it upstream in
 
 ## Phase 5 — Naming, icons, persistence
 
-- [ ] Add Input String objects for renaming channels from the VT.
+- [x] Add a VT configuration screen with eight Input String fields for
+      renaming channels and a back key to the main screen.
+- [x] Persist normalized channel names in NVS namespace `channels`; blank
+      names reset to `R{n}`, and names survive firmware updates.
+- [x] Apply names to the Data Mask, both SK1–SK8 pages, AUX-N designators,
+      and the read-only web relay table/API while retaining the toggle
+      underline and interlock `!` suffix.
 - [ ] Add a small built-in icon set (Picture Graphics) + Object Pointer
       based icon picker per channel.
-- [ ] Persist names/icons/AUX-N bookkeeping to NVS; reload on boot. AUX-N
+- [ ] Persist icons/AUX-N bookkeeping to NVS; reload on boot. AUX-N
       preferred-assignment persistence specifically also needs the
       upstream AgIsoStack++ gap noted at the end of Phase 4 fixed first --
       there's currently nothing on our side to hook into.
-- [ ] Confirm renamed channels show correctly both on our Data Mask *and*
-      the tractor's native AUX-N assignment page (this is the specific
-      "type it once, it shows up everywhere" behavior being replicated).
 
 ## Phase 6 — Automation rules
 
-Phase 5 (naming/icons/persistence) deliberately skipped for now -- it
-needs real bitmap artwork (Picture Graphics), which both takes design
-effort and grows the object pool / upload time, and isn't needed to prove
-out the automation rule concept. Started here with the concrete use case
+Channel naming and persistence from Phase 5 are implemented. Icon picking
+remains deferred because it needs bitmap artwork (Picture Graphics), which
+both takes design effort and grows the object pool / upload time. The
+automation phase started with the concrete use case
 that actually motivated this phase, rather than the fully generic
 `{input, trigger, output, action}` schema up front.
 

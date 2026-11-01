@@ -3,8 +3,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 #include "automation/interlock.hpp"
+#include "config/nvs_store.hpp"
 #include "esp_app_desc.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -57,13 +59,23 @@ function render(s) {
     var on = s.relays[i] != 0;
     var disabled = s.disabled[i] != 0;
     var tr = document.createElement('tr');
-    tr.innerHTML = '<td>R' + ch + '</td>' +
-      '<td class="' + (disabled ? 'di-active' : '') + '">' + (disabled ? 'ACTIVE' : '-') + '</td>' +
-      '<td><button class="' + (on ? 'on' : 'off') + '"' + (disabled && !on ? ' disabled' : '') + '>' +
-      (on ? 'ON' : 'OFF') + '</button></td>';
-    tr.querySelector('button').onclick = (function(ch, on) {
+    var nameCell = document.createElement('td');
+    nameCell.textContent = (s.names && s.names[i]) ? s.names[i] + (disabled ? '!' : '') : 'R' + ch;
+    tr.appendChild(nameCell);
+    var interlockCell = document.createElement('td');
+    interlockCell.className = disabled ? 'di-active' : '';
+    interlockCell.textContent = disabled ? 'ACTIVE' : '-';
+    tr.appendChild(interlockCell);
+    var outputCell = document.createElement('td');
+    var button = document.createElement('button');
+    button.className = on ? 'on' : 'off';
+    button.disabled = disabled && !on;
+    button.textContent = on ? 'ON' : 'OFF';
+    button.onclick = (function(ch, on) {
       return function() { setRelay(ch, on ? 0 : 1); };
     })(ch, on);
+    outputCell.appendChild(button);
+    tr.appendChild(outputCell);
     rows.appendChild(tr);
   }
 }
@@ -130,20 +142,53 @@ esp_err_t ota_page_get_handler(httpd_req_t* req) {
     return httpd_resp_send(req, kOtaHtml, HTTPD_RESP_USE_STRLEN);
 }
 
+void append_json_string(std::string& json, const std::string& value) {
+    constexpr char hex[] = "0123456789abcdef";
+    json.push_back('"');
+    for (const unsigned char character : value) {
+        if (character == '"' || character == '\\') {
+            json.push_back('\\');
+            json.push_back(static_cast<char>(character));
+        } else if (character < 0x20) {
+            json += "\\u00";
+            json.push_back(hex[character >> 4]);
+            json.push_back(hex[character & 0x0F]);
+        } else {
+            json.push_back(static_cast<char>(character));
+        }
+    }
+    json.push_back('"');
+}
+
 esp_err_t state_get_handler(httpd_req_t* req) {
-    char body[256];
-    int len = snprintf(body, sizeof(body), "{\"version\":\"%s\",\"relays\":[", esp_app_get_description()->version);
+    std::string body = "{\"version\":";
+    const char* version = esp_app_get_description()->version;
+    append_json_string(body, version ? version : "unknown");
+    body += ",\"relays\":[";
     for (int ch = 1; ch <= 8; ++ch) {
-        len += snprintf(body + len, sizeof(body) - len, "%s%d", ch == 1 ? "" : ",", io::relay_driver::get_relay(ch) ? 1 : 0);
+        if (ch > 1) {
+            body += ',';
+        }
+        body += io::relay_driver::get_relay(ch) ? '1' : '0';
     }
-    len += snprintf(body + len, sizeof(body) - len, "],\"disabled\":[");
+    body += "],\"disabled\":[";
     for (int ch = 1; ch <= 8; ++ch) {
-        len += snprintf(body + len, sizeof(body) - len, "%s%d", ch == 1 ? "" : ",", automation::interlock::is_disabled(ch) ? 1 : 0);
+        if (ch > 1) {
+            body += ',';
+        }
+        body += automation::interlock::is_disabled(ch) ? '1' : '0';
     }
-    len += snprintf(body + len, sizeof(body) - len, "]}");
+    body += "],\"names\":[";
+    for (int ch = 1; ch <= config::nvs_store::kChannelCount; ++ch) {
+        if (ch > 1) {
+            body += ',';
+        }
+        append_json_string(body, config::nvs_store::get_channel_name(ch));
+    }
+    body += "]}";
 
     httpd_resp_set_type(req, "application/json");
-    return httpd_resp_send(req, body, len);
+    return httpd_resp_send(req, body.c_str(), static_cast<int>(body.size()));
 }
 
 // Query params are the request's desired new state, not a toggle command

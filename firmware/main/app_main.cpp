@@ -10,6 +10,7 @@
 // firmware upload).
 
 #include "automation/interlock.hpp"
+#include "config/nvs_store.hpp"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
@@ -69,6 +70,7 @@ extern "C" void app_main(void) {
     // CAN self-test but before the (up to 5s) address-claim wait, so
     // there's something to connect to as early into boot as possible.
     net::wifi_ap::init();
+    config::nvs_store::init();
 
     // AgIsoStack++'s CAN hardware interface and VT client each spawn a
     // worker std::thread with a 64 KB stack (CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT,

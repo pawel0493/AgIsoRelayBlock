@@ -10,16 +10,20 @@ Phase 1 bring-up harness (`main/app_main.cpp` + `main/io/`), Phase 2 bus
 presence (`main/isobus/ecu_identity.cpp`), Phase 3 minimal VT presence,
 Phase 4 AUX-N (`main/isobus/vt_app.cpp` + `main/isobus/object_pool.iop`),
 and Phase 6's first automation rule (`main/automation/interlock.cpp`) --
-Phase 5 (naming/icons/persistence) deliberately skipped for now, see the
-roadmap. Blinks the WS2812 status LED, toggles relay channel 1 through the
+Phase 5 channel-name configuration and NVS persistence are now implemented
+(icon picking remains deferred), see the roadmap. Blinks the WS2812 status
+LED, toggles relay channel 1 through the
 TCA9554PWR I2C expander, debounces all 8 digital inputs, runs a CAN/TWAI
 self-test loopback, hands the TWAI peripheral to AgIsoStack++ to claim an
 ISO 11783-5 NAME/address, then uploads a VT object pool (an 8-channel
-relay indicator grid with a DI state box under each one, two Soft Key Mask
-pages, and 17 Auxiliary Function Type 2 objects) and wires it all up: SKM
+relay indicator grid with a DI state box under each one, three Soft Key Mask
+pages, a channel-name configuration mask, and 17 Auxiliary Function Type 2
+objects) and wires it all up: SKM
 page 1 (toggle) + page 2 (momentary override) + 17 AUX-N functions all
 drive the same relays, and digital input DI{n} acts as a fixed
-limit-switch interlock forcing channel {n} off. See
+limit-switch interlock forcing channel {n} off. The VT's CFG screen edits
+all eight channel names (up to 8 printable ASCII characters); names persist
+in NVS and are reflected in the VT, AUX-N labels and read-only web UI. See
 [../docs/vt-ui-design.md](../docs/vt-ui-design.md) for the full UI design
 and why behind each of these.
 
@@ -568,10 +572,10 @@ bench loop). After that, an `ISOBUS address claim: OK (address=N)` line
 ## Layout
 
 See [../docs/architecture.md#module-layout-planned](../docs/architecture.md#module-layout-planned)
-for the full planned layout. `io/` (bring-up + buzzer drivers) and
+for the full module layout. `io/` (bring-up + buzzer drivers),
 `isobus/` (`ecu_identity.cpp` -- NAME/address claiming; `vt_app.cpp` --
-VT client, object pool, and AUX-N event handling) exist so far;
-`automation/`, `config/`, and `net/` land in later phases. AUX-N handling
+VT client, object pool, and AUX-N event handling), `automation/`,
+`config/nvs_store.cpp` (channel names), and `net/` exist. AUX-N handling
 lives in `vt_app.cpp` rather than a separate `auxn_app.cpp` (deviation
 from the originally planned split, documented in architecture.md) since
 both sides share the same `VirtualTerminalClient` event dispatcher.

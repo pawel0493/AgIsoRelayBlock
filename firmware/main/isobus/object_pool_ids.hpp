@@ -9,14 +9,19 @@ namespace iso::object_pool_ids {
 
 constexpr uint16_t kWorkingSet = 1000;
 constexpr uint16_t kDataMask = 1100;
+constexpr uint16_t kConfigDataMask = 1300;
+constexpr uint16_t kConfigNameMaxChars = 8;
 constexpr uint16_t kSoftKeyMask = 1200;
 constexpr uint16_t kSoftKeyMask2 = 1201;
 constexpr uint16_t kSoftKeyMask3 = 1202;
+constexpr uint16_t kSoftKeyMaskConfig = 1203;
 constexpr uint16_t kTitleString = 1101;
 constexpr uint16_t kTitleStringMaxChars = 44;
 
 constexpr uint16_t kSoftkeyNext3 = 1266;
 constexpr uint16_t kSoftkeyBack3 = 1267;
+constexpr uint16_t kSoftkeyConfig = 1268;
+constexpr uint16_t kSoftkeyConfigBack = 1270;
 
 // WiFi status/control panel (page 3) -- see net/wifi_ap.hpp.
 constexpr uint16_t kSoftkeyWifiToggle = 1264;
@@ -31,6 +36,9 @@ constexpr uint16_t kWifiPasswordMaxChars = 32;
 inline uint16_t relay_rect_id(int channel) { return 1110 + channel; }
 inline uint16_t relay_fill_attr_id(int channel) { return 1920 + channel; }
 inline uint16_t relay_label_id(int channel) { return 1120 + channel; }
+inline uint16_t config_name_input_id(int channel) { return 1320 + channel; }
+inline uint16_t softkey_label_id(int key_number) { return 1230 + key_number; }
+inline uint16_t aux_latch_label_id(int channel) { return 1540 + channel; }
 inline uint16_t di_fill_attr_id(int channel) { return 1930 + channel; }
 
 // key_number: 1-8 = relay channels (toggle), 9 = buzzer, 10 = next page

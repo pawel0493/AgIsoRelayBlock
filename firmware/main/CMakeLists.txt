@@ -10,6 +10,7 @@ idf_component_register(
         "io/can_selftest.cpp"
         "io/i2c_scan.cpp"
         "io/buzzer_driver.cpp"
+        "io/cytron_md13s.cpp"
         "isobus/ecu_identity.cpp"
         "isobus/vt_app.cpp"
         "isobus/aux_assignment_nvs.cpp"

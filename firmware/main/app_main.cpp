@@ -19,6 +19,7 @@
 #include "freertos/task.h"
 #include "io/buzzer_driver.hpp"
 #include "io/can_selftest.hpp"
+#include "io/cytron_md13s.hpp"
 #include "io/i2c_scan.hpp"
 #include "io/input_driver.hpp"
 #include "io/relay_driver.hpp"
@@ -56,6 +57,7 @@ extern "C" void app_main(void) {
     io::input_driver::init();
     automation::interlock::init();
     io::buzzer_driver::init();
+    io::cytron_md13s::init();
     bool can_ok = io::can_selftest::run();
 
     ESP_LOGI(kTag, "bring-up: relay_expander=%s can_selftest=%s",
@@ -71,6 +73,7 @@ extern "C" void app_main(void) {
     // there's something to connect to as early into boot as possible.
     net::wifi_ap::init();
     config::nvs_store::init();
+    io::cytron_md13s::set_speed_percent(static_cast<uint8_t>(config::nvs_store::get_md13s_pwm_percent()));
 
     // AgIsoStack++'s CAN hardware interface and VT client each spawn a
     // worker std::thread with a 64 KB stack (CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT,

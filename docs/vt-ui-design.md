@@ -223,10 +223,11 @@ the override checkbox, effective on touch VTs) with the hint text
 ## Channel-name configuration
 
 Press **CFG** (SK1 on page 3, or the CFG touch button on the main screen) to switch to the dedicated configuration Data
-Mask. It lists all eight channels as editable Input String fields, with a
+Mask. It lists all eight channels as editable Input String fields plus one
+editable `PWM%` Input String for the Cytron MD13S output on GPIO48, with a
 back key at SK9 returning to the main Data Mask. The VT's on-screen keyboard
-edits each channel directly; clearing a field restores its default `R{n}`
-name.
+edits each channel directly; clearing a channel field restores its default
+`R{n}` name.
 
 Names are trimmed, restricted to printable ASCII, and limited to 8 characters
 so they remain compact on the Data Mask and soft keys. They are stored as
@@ -242,6 +243,11 @@ worker; NVS writes do not run in the VT/CAN thread.
 
 The "Momentary Override Safety" checkbox is separate from channel
 configuration and is **never persisted**; it always remains false at boot.
+
+The `PWM%` field accepts integer values in the range **0..100**. Out-of-range
+or non-numeric values are rejected and the current value is restored in the
+field. Successful edits apply immediately to the MD13S PWM output and persist
+as `md13s_pwm` in the NVS `channels` namespace.
 
 **Compatibility caveat:** not every VT renders 10 soft keys at once — many
 show 6 physical keys per mask, some 8, larger ones more. This needs

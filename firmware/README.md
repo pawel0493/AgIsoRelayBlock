@@ -23,8 +23,9 @@ objects) and wires it all up: SKM
 page 1 (toggle) + page 2 (momentary override) + 17 AUX-N functions all
 drive the same relays, and digital input DI{n} acts as a fixed
 limit-switch interlock forcing channel {n} off. The VT's CFG screen edits
-all eight channel names (up to 8 printable ASCII characters); names persist
-in NVS and are reflected in the VT, AUX-N labels and read-only web UI. See
+all eight channel names (up to 8 printable ASCII characters) and a Cytron
+MD13S PWM speed output value (GPIO48, 0-100%); values persist in NVS and
+names are reflected in the VT, AUX-N labels and read-only web UI. See
 [../docs/vt-ui-design.md](../docs/vt-ui-design.md) for the full UI design
 and why behind each of these.
 

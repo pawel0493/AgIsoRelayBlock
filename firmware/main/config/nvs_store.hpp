@@ -11,5 +11,7 @@ constexpr std::size_t kChannelNameMaxChars = 8;
 void init();
 std::string get_channel_name(int channel);
 bool set_channel_name(int channel, const std::string& name);
+int get_md13s_pwm_percent();
+bool set_md13s_pwm_percent(int percent);
 
 }  // namespace config::nvs_store

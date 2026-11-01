@@ -1,6 +1,7 @@
 #include "isobus/vt_app.hpp"
 
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,18 @@ namespace iso::vt_app {
 namespace {
 constexpr const char* kTag = "vt_app";
 constexpr uint8_t kColourBlack = 0;
+// Geometry the object pool is designed for (see tools/gen_object_pool.py).
+constexpr uint32_t kPoolDataMaskWidthPx = 480;
+constexpr uint32_t kPoolSoftKeyWidthPx = 60;
+
+// "Remember every successful AUX-N assignment" (default on, see
+// main/Kconfig.projbuild): many VTs never set the "store as preferred" bit
+// in the assignment command, so without this nothing would be persisted.
+#ifdef CONFIG_AUX_REMEMBER_ALL_ASSIGNMENTS
+constexpr bool kRememberAllAuxAssignments = true;
+#else
+constexpr bool kRememberAllAuxAssignments = false;
+#endif
 
 std::shared_ptr<isobus::VirtualTerminalClient> g_vt_client;
 std::shared_ptr<isobus::PartneredControlFunction> g_vt_partner;
@@ -55,14 +68,26 @@ void update_channel_label(int channel) {
     g_vt_client->send_change_string_value(object_pool_ids::relay_label_id(channel), display_name);
 }
 
+// Soft keys and AUX-N assignment lists are only ~60 px wide, so long channel
+// names are shortened there (the full name stays on the Data Mask and in the
+// CFG view). Padded to the object's reserved length like the other strings.
+std::string key_label_text(const std::string& name) {
+    std::string label = name.substr(0, object_pool_ids::kKeyLabelMaxChars);
+    label.resize(object_pool_ids::kKeyLabelMaxChars, ' ');
+    return label;
+}
+
 void update_channel_name_outputs(int channel) {
     if (!g_vt_client) {
         return;
     }
 
     const std::string name = config::nvs_store::get_channel_name(channel);
-    g_vt_client->send_change_string_value(object_pool_ids::softkey_label_id(channel), name);
-    g_vt_client->send_change_string_value(object_pool_ids::aux_latch_label_id(channel), name);
+    const std::string key_label = key_label_text(name);
+    g_vt_client->send_change_string_value(object_pool_ids::softkey_label_id(channel), key_label);
+    g_vt_client->send_change_string_value(object_pool_ids::softkey2_label_id(channel), key_label);
+    g_vt_client->send_change_string_value(object_pool_ids::aux_latch_label_id(channel), key_label);
+    g_vt_client->send_change_string_value(object_pool_ids::aux_momentary_label_id(channel), key_label);
     std::string input_value = name;
     input_value.resize(object_pool_ids::kConfigNameMaxChars, ' ');
     g_vt_client->send_change_string_value(object_pool_ids::config_name_input_id(channel), input_value);
@@ -164,7 +189,37 @@ void handle_momentary_override(int channel, bool pressed) {
     st.last_input_state = pressed;
 }
 
+// Switches the VT to the channel-name configuration view, logging whether
+// the command was sent; the VT's answer is logged by
+// handle_change_active_mask_event().
+void open_config_view(const char* source) {
+    bool ok = g_vt_client->send_change_active_mask(object_pool_ids::kWorkingSet,
+                                                   object_pool_ids::kConfigDataMask);
+    ESP_LOGI(kTag, "%s: open channel-name configuration (change active mask to %u) -> %s", source,
+             object_pool_ids::kConfigDataMask, ok ? "sent, waiting for VT confirmation" : "FAILED to send");
+}
+
+const char* key_event_name(isobus::VirtualTerminalClient::KeyActivationCode code) {
+    switch (code) {
+        case isobus::VirtualTerminalClient::KeyActivationCode::ButtonUnlatchedOrReleased: return "released";
+        case isobus::VirtualTerminalClient::KeyActivationCode::ButtonPressedOrLatched: return "pressed";
+        case isobus::VirtualTerminalClient::KeyActivationCode::ButtonStillHeld: return "held";
+        default: return "aborted";
+    }
+}
+
+void handle_button_event(const isobus::VirtualTerminalClient::VTKeyEvent& event) {
+    ESP_LOGI(kTag, "VT button event: objectID=%u parent=%u keyNumber=%u keyEvent=%d (%s)", event.objectID,
+             event.parentObjectID, event.keyNumber, static_cast<int>(event.keyEvent), key_event_name(event.keyEvent));
+    if (event.objectID == object_pool_ids::kConfigButton &&
+        event.keyEvent == isobus::VirtualTerminalClient::KeyActivationCode::ButtonUnlatchedOrReleased) {
+        open_config_view("Button CFG");
+    }
+}
+
 void handle_soft_key_event(const isobus::VirtualTerminalClient::VTKeyEvent& event) {
+    ESP_LOGI(kTag, "VT soft key event: objectID=%u parent=%u keyNumber=%u keyEvent=%d (%s)", event.objectID,
+             event.parentObjectID, event.keyNumber, static_cast<int>(event.keyEvent), key_event_name(event.keyEvent));
     // Page 2's momentary keys need press AND release (to invert-then-
     // restore), unlike everything below which only acts on release.
     for (int ch = 1; ch <= 8; ++ch) {
@@ -202,9 +257,7 @@ void handle_soft_key_event(const isobus::VirtualTerminalClient::VTKeyEvent& even
     }
 
     if (event.objectID == object_pool_ids::kSoftkeyConfig) {
-        bool ok = g_vt_client->send_change_active_mask(object_pool_ids::kWorkingSet,
-                                                       object_pool_ids::kConfigDataMask);
-        ESP_LOGI(kTag, "SK CFG: open channel-name configuration -> %s", ok ? "sent" : "FAILED to send");
+        open_config_view("SK CFG");
         return;
     }
 
@@ -265,6 +318,17 @@ void handle_change_soft_key_mask_event(const isobus::VirtualTerminalClient::VTCh
     ESP_LOGI(kTag, "VT confirms soft key mask now %u (mask %u) missingObjects=%d maskOrChildHasErrors=%d anyOtherError=%d",
              event.softKeyMaskObjectID, event.dataOrAlarmMaskObjectID, event.missingObjects,
              event.maskOrChildHasErrors, event.anyOtherError);
+}
+
+// Diagnostic only: the VT's answer to Change Active Mask (e.g. entering CFG).
+void handle_change_active_mask_event(const isobus::VirtualTerminalClient::VTChangeActiveMaskEvent& event) {
+    ESP_LOGI(kTag, "VT confirms active mask %u (error object %u, parent %u) missingObjects=%d maskOrChildHasErrors=%d anyOtherError=%d poolDeleted=%d",
+             event.maskObjectID, event.errorObjectID, event.parentObjectID, event.missingObjects,
+             event.maskOrChildHasErrors, event.anyOtherError, event.poolDeleted);
+    if (event.maskObjectID == object_pool_ids::kConfigDataMask &&
+        !(event.missingObjects || event.maskOrChildHasErrors || event.anyOtherError)) {
+        ESP_LOGI(kTag, "CFG mask is active on the VT");
+    }
 }
 
 // Fired when the operator edits an Input String and confirms it on the VT.
@@ -403,10 +467,18 @@ void init(std::shared_ptr<isobus::InternalControlFunction> internal_ecu) {
     g_vt_client = std::make_shared<isobus::VirtualTerminalClient>(vt_partner, internal_ecu);
     g_aux_preferred_repository = std::make_shared<AuxiliaryPreferredAssignmentNVSRepository>();
     g_vt_client->set_auxiliary_preferred_assignment_repository(g_aux_preferred_repository);
+    g_vt_client->set_auxiliary_store_all_assignments(kRememberAllAuxAssignments);
+    ESP_LOGI(kTag, "AUX-N: remember every successful assignment = %s", kRememberAllAuxAssignments ? "ON" : "OFF (only storeAsPreferred)");
     g_vt_client->set_object_pool(0, object_pool_iop_start, pool_size, pool_version);
+    // The pool is designed for a 480 px wide Data Mask and 60 px soft keys;
+    // let the stack scale it to whatever the connected VT reports (without
+    // this a VT with a different size can show empty masks / missing keys).
+    g_vt_client->set_object_pool_scaling(0, kPoolDataMaskWidthPx, kPoolSoftKeyWidthPx);
     g_vt_client->get_vt_soft_key_event_dispatcher().add_listener(handle_soft_key_event);
     g_vt_client->get_auxiliary_function_event_dispatcher().add_listener(handle_aux_function_event);
+    g_vt_client->get_vt_button_event_dispatcher().add_listener(handle_button_event);
     g_vt_client->get_vt_change_soft_key_mask_event_dispatcher().add_listener(handle_change_soft_key_mask_event);
+    g_vt_client->get_vt_change_active_mask_event_dispatcher().add_listener(handle_change_active_mask_event);
     g_vt_client->get_vt_change_string_value_event_dispatcher().add_listener(handle_change_string_value_event);
     g_vt_client->initialize(true);
     ESP_LOGI(kTag, "VT client started, waiting for a Virtual Terminal on the bus...");
@@ -465,6 +537,15 @@ void resync_display() {
         title.resize(object_pool_ids::kTitleStringMaxChars);
     }
     g_vt_client->send_change_string_value(object_pool_ids::kTitleString, title);
+
+    ESP_LOGI(kTag, "VT reports: data mask %ux%u px, soft key %ux%u px, %u virtual / %u physical soft keys (pool designed for %u px mask, %u px keys)",
+             static_cast<unsigned>(g_vt_client->get_number_x_pixels()),
+             static_cast<unsigned>(g_vt_client->get_number_y_pixels()),
+             static_cast<unsigned>(g_vt_client->get_softkey_x_axis_pixels()),
+             static_cast<unsigned>(g_vt_client->get_softkey_y_axis_pixels()),
+             static_cast<unsigned>(g_vt_client->get_number_virtual_softkeys()),
+             static_cast<unsigned>(g_vt_client->get_number_physical_softkeys()),
+             static_cast<unsigned>(kPoolDataMaskWidthPx), static_cast<unsigned>(kPoolSoftKeyWidthPx));
 
     for (int ch = 1; ch <= 8; ++ch) {
         apply_relay_state(ch, io::relay_driver::get_relay(ch));
@@ -526,6 +607,33 @@ bool clear_preferred_aux_assignments() {
     }
     const uint64_t vt_name = g_vt_partner->get_NAME().get_full_name();
     return g_aux_preferred_repository->clear(vt_name);
+}
+
+bool get_preferred_aux_assignments_json(std::string& json) {
+    if (!g_vt_client || !g_aux_preferred_repository) {
+        return false;
+    }
+    char buf[256];
+    const bool vt_known = g_vt_partner && g_vt_partner->get_address_valid();
+    const uint64_t vt_name = vt_known ? g_vt_partner->get_NAME().get_full_name() : 0;
+    std::snprintf(buf, sizeof(buf), "{\"vtConnected\":%s,\"rememberAll\":%s,\"vtName\":\"0x%016llx\",\"records\":[",
+                  g_vt_client->get_is_connected() ? "true" : "false", kRememberAllAuxAssignments ? "true" : "false",
+                  static_cast<unsigned long long>(vt_name));
+    json = buf;
+    if (vt_known) {
+        bool first = true;
+        for (const auto& r : g_aux_preferred_repository->list(vt_name)) {
+            std::snprintf(buf, sizeof(buf),
+                          "%s{\"deviceName\":\"0x%016llx\",\"modelId\":%u,\"functionObjectId\":%u,\"inputObjectId\":%u,\"functionType\":%u}",
+                          first ? "" : ",", static_cast<unsigned long long>(r.auxiliaryInputDeviceName),
+                          static_cast<unsigned>(r.modelIdentificationCode), static_cast<unsigned>(r.functionObjectID),
+                          static_cast<unsigned>(r.inputObjectID), static_cast<unsigned>(r.functionType));
+            json += buf;
+            first = false;
+        }
+    }
+    json += "]}";
+    return true;
 }
 
 }  // namespace iso::vt_app

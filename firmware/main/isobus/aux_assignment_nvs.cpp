@@ -166,7 +166,6 @@ AuxiliaryPreferredAssignmentNVSRepository::AuxiliaryPreferredAssignmentNVSReposi
 
 AuxiliaryPreferredAssignmentNVSRepository::~AuxiliaryPreferredAssignmentNVSRepository()
 {
-	std::lock_guard<std::mutex> lock(operationMutex);
 
 	const auto queueHandle = static_cast<QueueHandle_t>(workerQueue);
 	const auto taskHandle = static_cast<TaskHandle_t>(workerTask);
@@ -181,7 +180,6 @@ AuxiliaryPreferredAssignmentNVSRepository::~AuxiliaryPreferredAssignmentNVSRepos
 
 		WorkerRequest stopRequest{
 			WorkerCommand::StopWorker,
-			nullptr,
 			nullptr,
 			xSemaphoreCreateBinary(),
 			false
@@ -259,8 +257,9 @@ void AuxiliaryPreferredAssignmentNVSRepository::worker_task()
 				request->success = (nullptr != request->records) && load_all_records_from_nvs(*request->records);
 				break;
 
-			case WorkerCommand::SaveRecords:
-				request->success = (nullptr != request->recordsToSave) && save_all_records_to_nvs(*request->recordsToSave);
+			case WorkerCommand::SaveSnapshot:
+				save_snapshot();
+				request->success = true;
 				break;
 
 			case WorkerCommand::StopWorker:
@@ -280,7 +279,21 @@ void AuxiliaryPreferredAssignmentNVSRepository::worker_task()
 	}
 }
 
-bool AuxiliaryPreferredAssignmentNVSRepository::dispatch_request(WorkerRequest &request)
+// Runs in the worker task: take a copy of the latest cache (so several quick
+// changes collapse into one flash write) and write it without holding the lock.
+void AuxiliaryPreferredAssignmentNVSRepository::save_snapshot()
+{
+	std::vector<PersistedAssignmentRecord> snapshot;
+	{
+		std::lock_guard<std::mutex> lock(operationMutex);
+		snapshot = cache;
+		savePending = false;
+	}
+	const bool ok = save_all_records_to_nvs(snapshot);
+	ESP_LOGI(kTag, "saved %u preferred assignment record(s) to NVS -> %s", static_cast<unsigned>(snapshot.size()), ok ? "OK" : "FAILED");
+}
+
+bool AuxiliaryPreferredAssignmentNVSRepository::dispatch_load(std::vector<PersistedAssignmentRecord> &records)
 {
 	if ((nullptr == workerQueue) || (nullptr == workerTask))
 	{
@@ -290,40 +303,77 @@ bool AuxiliaryPreferredAssignmentNVSRepository::dispatch_request(WorkerRequest &
 
 	if (xTaskGetCurrentTaskHandle() == static_cast<TaskHandle_t>(workerTask))
 	{
-		switch (request.command)
-		{
-			case WorkerCommand::LoadRecords:
-				return (nullptr != request.records) && load_all_records_from_nvs(*request.records);
-
-			case WorkerCommand::SaveRecords:
-				return (nullptr != request.recordsToSave) && save_all_records_to_nvs(*request.recordsToSave);
-
-			case WorkerCommand::StopWorker:
-				return true;
-		}
+		return load_all_records_from_nvs(records);
 	}
 
-	request.completionSignal = xSemaphoreCreateBinary();
+	WorkerRequest request{ WorkerCommand::LoadRecords, &records, xSemaphoreCreateBinary(), false };
 	if (nullptr == request.completionSignal)
 	{
 		ESP_LOGE(kTag, "failed to create request synchronization primitive");
 		return false;
 	}
 
-	request.success = false;
 	auto *requestPointer = &request;
 	if (xQueueSend(static_cast<QueueHandle_t>(workerQueue), &requestPointer, portMAX_DELAY) != pdTRUE)
 	{
 		ESP_LOGE(kTag, "failed to enqueue NVS worker request");
 		vSemaphoreDelete(request.completionSignal);
-		request.completionSignal = nullptr;
 		return false;
 	}
 
 	(void)xSemaphoreTake(request.completionSignal, portMAX_DELAY);
 	vSemaphoreDelete(request.completionSignal);
-	request.completionSignal = nullptr;
 	return request.success;
+}
+
+// Loads the NVS blob into the RAM cache once (through the worker task, which
+// keeps flash access off the VT thread's PSRAM stack). The lock is not held
+// while waiting for the worker.
+bool AuxiliaryPreferredAssignmentNVSRepository::ensure_loaded()
+{
+	{
+		std::lock_guard<std::mutex> lock(operationMutex);
+		if (cacheLoaded)
+		{
+			return true;
+		}
+	}
+	std::vector<PersistedAssignmentRecord> records;
+	if (!dispatch_load(records))
+	{
+		return false;
+	}
+	std::lock_guard<std::mutex> lock(operationMutex);
+	if (!cacheLoaded)
+	{
+		cache = std::move(records);
+		cacheLoaded = true;
+		ESP_LOGI(kTag, "loaded %u preferred assignment record(s) from NVS", static_cast<unsigned>(cache.size()));
+	}
+	return true;
+}
+
+// Caller holds operationMutex. At most one save request is ever queued.
+void AuxiliaryPreferredAssignmentNVSRepository::schedule_save_locked()
+{
+	if (savePending)
+	{
+		return;
+	}
+	if ((nullptr == workerQueue) || (nullptr == workerTask))
+	{
+		ESP_LOGE(kTag, "NVS worker is not available, assignment change is kept in RAM only");
+		return;
+	}
+	auto *requestPointer = &saveRequest;
+	if (xQueueSend(static_cast<QueueHandle_t>(workerQueue), &requestPointer, 0) == pdTRUE)
+	{
+		savePending = true;
+	}
+	else
+	{
+		ESP_LOGE(kTag, "NVS worker queue is full, assignment change is kept in RAM only");
+	}
 }
 
 std::vector<std::uint8_t> AuxiliaryPreferredAssignmentNVSRepository::serialize(const std::vector<PersistedAssignmentRecord> &records)
@@ -395,18 +445,6 @@ bool AuxiliaryPreferredAssignmentNVSRepository::deserialize(const std::vector<st
 	return (offset == blob.size());
 }
 
-bool AuxiliaryPreferredAssignmentNVSRepository::load_all_records(std::vector<PersistedAssignmentRecord> &records)
-{
-	WorkerRequest request{
-		WorkerCommand::LoadRecords,
-		&records,
-		nullptr,
-		nullptr,
-		false
-	};
-	return dispatch_request(request);
-}
-
 bool AuxiliaryPreferredAssignmentNVSRepository::load_all_records_from_nvs(std::vector<PersistedAssignmentRecord> &records)
 {
 	records.clear();
@@ -450,18 +488,6 @@ bool AuxiliaryPreferredAssignmentNVSRepository::load_all_records_from_nvs(std::v
 	return true;
 }
 
-bool AuxiliaryPreferredAssignmentNVSRepository::save_all_records(const std::vector<PersistedAssignmentRecord> &records)
-{
-	WorkerRequest request{
-		WorkerCommand::SaveRecords,
-		nullptr,
-		&records,
-		nullptr,
-		false
-	};
-	return dispatch_request(request);
-}
-
 bool AuxiliaryPreferredAssignmentNVSRepository::save_all_records_to_nvs(const std::vector<PersistedAssignmentRecord> &records)
 {
 	nvs_handle_t handle;
@@ -475,18 +501,34 @@ bool AuxiliaryPreferredAssignmentNVSRepository::save_all_records_to_nvs(const st
 	if (records.empty())
 	{
 		err = nvs_erase_key(handle, kBlobKey);
-		if ((err == ESP_OK) || (err == ESP_ERR_NVS_NOT_FOUND))
+		if ((err != ESP_OK) && (err != ESP_ERR_NVS_NOT_FOUND))
+		{
+			ESP_LOGE(kTag, "nvs_erase_key failed: %s", esp_err_to_name(err));
+		}
+		else
 		{
 			err = nvs_commit(handle);
+			if (err != ESP_OK)
+			{
+				ESP_LOGE(kTag, "nvs_commit failed: %s", esp_err_to_name(err));
+			}
 		}
 	}
 	else
 	{
 		const auto blob = serialize(records);
 		err = nvs_set_blob(handle, kBlobKey, blob.data(), blob.size());
-		if (err == ESP_OK)
+		if (err != ESP_OK)
+		{
+			ESP_LOGE(kTag, "nvs_set_blob failed: %s (%u bytes)", esp_err_to_name(err), static_cast<unsigned>(blob.size()));
+		}
+		else
 		{
 			err = nvs_commit(handle);
+			if (err != ESP_OK)
+			{
+				ESP_LOGE(kTag, "nvs_commit failed: %s", esp_err_to_name(err));
+			}
 		}
 	}
 	nvs_close(handle);
@@ -499,23 +541,37 @@ bool AuxiliaryPreferredAssignmentNVSRepository::save_all_records_to_nvs(const st
 	return true;
 }
 
+std::uint64_t AuxiliaryPreferredAssignmentNVSRepository::stable_vt_key(std::uint64_t virtualTerminalName)
+{
+	// NAME layout: bits 32-34 ECU instance, 35-39 function instance,
+	// 56-59 device class instance, 63 arbitrary address capable.
+	constexpr std::uint64_t kVolatileBits = (0xFFULL << 32) | (0x0FULL << 56) | (1ULL << 63);
+	return virtualTerminalName & ~kVolatileBits;
+}
+
+std::vector<AuxiliaryPreferredAssignmentNVSRepository::PersistedAssignmentRecord> AuxiliaryPreferredAssignmentNVSRepository::list(std::uint64_t virtualTerminalName)
+{
+	std::vector<PersistedAssignmentRecord> result;
+	if (!ensure_loaded())
+	{
+		return result;
+	}
+	std::lock_guard<std::mutex> lock(operationMutex);
+	for (const auto &record : cache)
+	{
+		if (stable_vt_key(record.virtualTerminalName) == stable_vt_key(virtualTerminalName))
+		{
+			result.push_back(record);
+		}
+	}
+	return result;
+}
+
 std::vector<isobus::VirtualTerminalClient::PreferredAuxiliaryAssignment> AuxiliaryPreferredAssignmentNVSRepository::load(std::uint64_t virtualTerminalName)
 {
-	std::lock_guard<std::mutex> lock(operationMutex);
-
-	std::vector<PersistedAssignmentRecord> records;
-	if (!load_all_records(records))
-	{
-		return {};
-	}
-
 	std::vector<isobus::VirtualTerminalClient::PreferredAuxiliaryAssignment> result;
-	for (const auto &record : records)
+	for (const auto &record : list(virtualTerminalName))
 	{
-		if (record.virtualTerminalName != virtualTerminalName)
-		{
-			continue;
-		}
 		result.push_back({
 		  record.auxiliaryInputDeviceName,
 		  record.modelIdentificationCode,
@@ -526,15 +582,14 @@ std::vector<isobus::VirtualTerminalClient::PreferredAuxiliaryAssignment> Auxilia
 		  }
 		});
 	}
+	ESP_LOGI(kTag, "load: %u record(s) for VT NAME 0x%016llx (matched on stable key 0x%016llx)", static_cast<unsigned>(result.size()),
+	         static_cast<unsigned long long>(virtualTerminalName), static_cast<unsigned long long>(stable_vt_key(virtualTerminalName)));
 	return result;
 }
 
 bool AuxiliaryPreferredAssignmentNVSRepository::store(std::uint64_t virtualTerminalName, const isobus::VirtualTerminalClient::PreferredAuxiliaryAssignment &assignment)
 {
-	std::lock_guard<std::mutex> lock(operationMutex);
-
-	std::vector<PersistedAssignmentRecord> records;
-	if (!load_all_records(records))
+	if (!ensure_loaded())
 	{
 		return false;
 	}
@@ -548,69 +603,65 @@ bool AuxiliaryPreferredAssignmentNVSRepository::store(std::uint64_t virtualTermi
 		static_cast<std::uint8_t>(assignment.function.functionType)
 	};
 
-	auto existing = std::find_if(records.begin(), records.end(), [virtualTerminalName, &assignment](const PersistedAssignmentRecord &record) {
-		return (record.virtualTerminalName == virtualTerminalName) &&
+	std::lock_guard<std::mutex> lock(operationMutex);
+	const auto key = stable_vt_key(virtualTerminalName);
+	auto existing = std::find_if(cache.begin(), cache.end(), [key, &assignment](const PersistedAssignmentRecord &record) {
+		return (stable_vt_key(record.virtualTerminalName) == key) &&
 		       (record.functionObjectID == assignment.function.functionObjectID);
 	});
-	if (existing != records.end())
+	if (existing != cache.end())
 	{
 		*existing = updatedRecord;
 	}
 	else
 	{
-		records.push_back(updatedRecord);
+		cache.push_back(updatedRecord);
 	}
-
-	return save_all_records(records);
+	schedule_save_locked();
+	return true;
 }
 
 bool AuxiliaryPreferredAssignmentNVSRepository::remove(std::uint64_t virtualTerminalName, std::uint16_t functionObjectID)
 {
-	std::lock_guard<std::mutex> lock(operationMutex);
-
-	std::vector<PersistedAssignmentRecord> records;
-	if (!load_all_records(records))
+	if (!ensure_loaded())
 	{
 		return false;
 	}
 
-	const auto before = records.size();
-	records.erase(std::remove_if(records.begin(), records.end(), [virtualTerminalName, functionObjectID](const PersistedAssignmentRecord &record) {
-		return (record.virtualTerminalName == virtualTerminalName) &&
+	std::lock_guard<std::mutex> lock(operationMutex);
+	const auto key = stable_vt_key(virtualTerminalName);
+	const auto before = cache.size();
+	cache.erase(std::remove_if(cache.begin(), cache.end(), [key, functionObjectID](const PersistedAssignmentRecord &record) {
+		return (stable_vt_key(record.virtualTerminalName) == key) &&
 		       (record.functionObjectID == functionObjectID);
 	}),
-	              records.end());
-
-	if (before == records.size())
+	            cache.end());
+	if (before != cache.size())
 	{
-		return true;
+		schedule_save_locked();
 	}
-
-	return save_all_records(records);
+	return true;
 }
 
 bool AuxiliaryPreferredAssignmentNVSRepository::clear(std::uint64_t virtualTerminalName)
 {
-	std::lock_guard<std::mutex> lock(operationMutex);
-
-	std::vector<PersistedAssignmentRecord> records;
-	if (!load_all_records(records))
+	if (!ensure_loaded())
 	{
 		return false;
 	}
 
-	const auto before = records.size();
-	records.erase(std::remove_if(records.begin(), records.end(), [virtualTerminalName](const PersistedAssignmentRecord &record) {
-		return record.virtualTerminalName == virtualTerminalName;
+	std::lock_guard<std::mutex> lock(operationMutex);
+	const auto key = stable_vt_key(virtualTerminalName);
+	const auto before = cache.size();
+	cache.erase(std::remove_if(cache.begin(), cache.end(), [key](const PersistedAssignmentRecord &record) {
+		return stable_vt_key(record.virtualTerminalName) == key;
 	}),
-	              records.end());
-
-	if (before == records.size())
+	            cache.end());
+	if (before != cache.size())
 	{
-		return true;
+		schedule_save_locked();
 	}
-
-	return save_all_records(records);
+	return true;
 }
 
 } // namespace iso::vt_app

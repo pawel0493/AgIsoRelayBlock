@@ -429,7 +429,8 @@ Behavior:
   arbitrary-address-capable bits, so a changed instance number does not hide
   the stored entries.
 - Records are kept in a RAM cache; changes are written by the internal-RAM
-  worker task (coalesced), so the VT/CAN thread never waits for flash.
+  cache and committed to NVS synchronously on every assignment change, so a
+  reboot immediately after assignment cannot lose a still-queued write.
 
 `PreferredAssignmentCommand` layout (ISO 11783-6 Auxiliary Control Type 2):
 `0x22`, number of input units, then per unit: NAME (8 B, little endian),

@@ -1,6 +1,7 @@
 #include "isobus/vt_app.hpp"
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -10,6 +11,7 @@
 #include "esp_app_desc.h"
 #include "esp_log.h"
 #include "io/buzzer_driver.hpp"
+#include "io/cytron_md13s.hpp"
 #include "io/relay_driver.hpp"
 #include "isobus/diagnostics.hpp"
 #include "isobus/aux_assignment_nvs.hpp"
@@ -102,6 +104,15 @@ void update_all_channel_name_outputs() {
     for (int channel = 1; channel <= config::nvs_store::kChannelCount; ++channel) {
         update_channel_name_outputs(channel);
     }
+}
+
+void update_md13s_pwm_display() {
+    if (!g_vt_client) {
+        return;
+    }
+    std::string display = std::to_string(config::nvs_store::get_md13s_pwm_percent());
+    display.resize(object_pool_ids::kConfigPwmMaxChars, ' ');
+    g_vt_client->send_change_string_value(object_pool_ids::kConfigPwmInput, display);
 }
 
 // The relay driver is the one source of truth for relay state (per
@@ -348,6 +359,41 @@ void handle_change_string_value_event(const isobus::VirtualTerminalClient::VTCha
         }
     }
 
+    if (event.objectID == object_pool_ids::kConfigPwmInput) {
+        std::string value = event.value;
+        while (!value.empty() && value.back() == ' ') {
+            value.pop_back();
+        }
+        int parsed = -1;
+        if (!value.empty()) {
+            char* end = nullptr;
+            long parsed_long = std::strtol(value.c_str(), &end, 10);
+            if (end == value.c_str() || *end != '\0') {
+                parsed = -1;
+            } else if (parsed_long < 0 || parsed_long > 100) {
+                parsed = -1;
+            } else {
+                parsed = static_cast<int>(parsed_long);
+            }
+        }
+
+        if (parsed < 0 || parsed > 100) {
+            ESP_LOGW(kTag, "MD13S PWM value \"%s\" rejected (allowed range: 0..100)", event.value.c_str());
+            update_md13s_pwm_display();
+            return;
+        }
+        if (!config::nvs_store::set_md13s_pwm_percent(parsed)) {
+            ESP_LOGE(kTag, "MD13S PWM value %d was not saved; restoring current value", parsed);
+            update_md13s_pwm_display();
+            return;
+        }
+        if (!io::cytron_md13s::set_speed_percent(static_cast<uint8_t>(parsed))) {
+            ESP_LOGE(kTag, "MD13S PWM value %d was saved but could not be applied", parsed);
+        }
+        update_md13s_pwm_display();
+        return;
+    }
+
     if (event.objectID != object_pool_ids::kWifiPasswordInput) {
         return;
     }
@@ -552,6 +598,7 @@ void resync_display() {
         set_interlock_state(ch, automation::interlock::is_disabled(ch));
     }
     update_all_channel_name_outputs();
+    update_md13s_pwm_display();
     g_vt_client->send_change_fill_attributes(
         object_pool_ids::kOverrideCheckboxFillAttr,
         g_momentary_override_safety_enabled ? isobus::VirtualTerminalClient::FillType::FillWithSpecifiedColourInFillColourAttribute

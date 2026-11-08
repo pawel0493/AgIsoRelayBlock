@@ -67,6 +67,9 @@ ID_CONFIG_DATA_MASK = 1300
 ID_CONFIG_TITLE = 1301
 ID_CONFIG_NAME_LABEL_BASE = 1310
 ID_CONFIG_NAME_INPUT_BASE = 1320
+ID_CONFIG_PWM_LABEL = 1330
+ID_CONFIG_PWM_INPUT = 1331
+CONFIG_PWM_MAX_CHARS = 3
 ID_TITLE_STRING = 1101
 # Reserved character count for ID_TITLE_STRING -- see build_pool()'s comment
 # on this same constant for why it's wider than the static "AgIsoRelayBlock"
@@ -536,7 +539,8 @@ def build_pool():
     data_mask_children.append((ID_WIFI_CLIENTS_LABEL, LEFT_MARGIN, wifi_y + CHECKBOX_SIZE + LINE_HEIGHT * 3))
 
     # --- Channel-name configuration Data Mask. The firmware replaces the
-    # default Input String values with persisted names after connecting.
+    # default Input String values with persisted names after connecting. It
+    # also includes MD13S PWM speed (0-100%), editable directly from CFG.
     config_children = [(ID_CONFIG_TITLE, LEFT_MARGIN, 4)]
     objects.append(make_output_string(ID_CONFIG_TITLE, 240, 24, "Channel names", font_id=ID_FONT_NAME))
     for ch in range(1, 9):
@@ -549,6 +553,13 @@ def build_pool():
                                          font_id=ID_FONT_NAME))
         config_children.append((label_id, LEFT_MARGIN, y))
         config_children.append((input_id, LEFT_MARGIN + 84, y))
+
+    pwm_y = 32 + 8 * 38 + 8
+    objects.append(make_output_string(ID_CONFIG_PWM_LABEL, 80, 24, "PWM%", font_id=ID_FONT_NAME))
+    objects.append(make_input_string(ID_CONFIG_PWM_INPUT, 120, 30, CONFIG_PWM_MAX_CHARS,
+                                     "0".ljust(CONFIG_PWM_MAX_CHARS), font_id=ID_FONT_NAME))
+    config_children.append((ID_CONFIG_PWM_LABEL, LEFT_MARGIN, pwm_y))
+    config_children.append((ID_CONFIG_PWM_INPUT, LEFT_MARGIN + 84, pwm_y))
 
     # --- Soft Key Mask page 1 (default/initial): SK1-SK8 (relay toggles) +
     # SK9 (buzzer) + SK10 (next page). Emitted *before* the Data Mask that
@@ -707,6 +718,8 @@ def generate_ids_header():
         "constexpr uint16_t kDataMask = {};".format(ID_DATA_MASK),
         "constexpr uint16_t kConfigDataMask = {};".format(ID_CONFIG_DATA_MASK),
         "constexpr uint16_t kConfigNameMaxChars = {};".format(CHANNEL_NAME_MAX_CHARS),
+        "constexpr uint16_t kConfigPwmInput = {};".format(ID_CONFIG_PWM_INPUT),
+        "constexpr uint16_t kConfigPwmMaxChars = {};".format(CONFIG_PWM_MAX_CHARS),
         "constexpr uint16_t kSoftKeyMask = {};".format(ID_SOFT_KEY_MASK),
         "constexpr uint16_t kSoftKeyMask2 = {};".format(ID_SOFT_KEY_MASK_2),
         "constexpr uint16_t kSoftKeyMask3 = {};".format(ID_SOFT_KEY_MASK_3),

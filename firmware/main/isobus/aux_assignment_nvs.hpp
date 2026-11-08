@@ -60,7 +60,7 @@ private:
 	void worker_task();
 	bool dispatch_load(std::vector<PersistedAssignmentRecord> &records);
 	bool ensure_loaded();
-	bool schedule_save_locked();
+	void schedule_save_locked();
 	void save_snapshot();
 	static bool load_all_records_from_nvs(std::vector<PersistedAssignmentRecord> &records);
 	static bool save_all_records_to_nvs(const std::vector<PersistedAssignmentRecord> &records);
@@ -73,7 +73,9 @@ private:
 	void *workerTaskStack = nullptr;
 	SemaphoreHandle_t workerExitSignal = nullptr;
 	std::size_t workerStackDepthWords = 0;
-	// Guards cache and cacheLoaded.
+	// Guards cache, cacheLoaded and savePending. Never held across NVS access
+	// or while waiting for the worker, so the VT/CAN thread only does RAM
+	// work; the flash write happens asynchronously in the worker task.
 	std::mutex operationMutex;
 	std::vector<PersistedAssignmentRecord> cache;
 	bool cacheLoaded = false;

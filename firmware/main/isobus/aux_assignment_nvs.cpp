@@ -353,12 +353,27 @@ bool AuxiliaryPreferredAssignmentNVSRepository::ensure_loaded()
 	return true;
 }
 
-// Caller holds operationMutex.
-bool AuxiliaryPreferredAssignmentNVSRepository::schedule_save_locked()
+// Caller holds operationMutex. At most one save request is ever queued.
+void AuxiliaryPreferredAssignmentNVSRepository::schedule_save_locked()
 {
-	const bool ok = save_all_records_to_nvs(cache);
-	ESP_LOGI(kTag, "saved %u preferred assignment record(s) to NVS -> %s", static_cast<unsigned>(cache.size()), ok ? "OK" : "FAILED");
-	return ok;
+	if (savePending)
+	{
+		return;
+	}
+	if ((nullptr == workerQueue) || (nullptr == workerTask))
+	{
+		ESP_LOGE(kTag, "NVS worker is not available, assignment change is kept in RAM only");
+		return;
+	}
+	auto *requestPointer = &saveRequest;
+	if (xQueueSend(static_cast<QueueHandle_t>(workerQueue), &requestPointer, 0) == pdTRUE)
+	{
+		savePending = true;
+	}
+	else
+	{
+		ESP_LOGE(kTag, "NVS worker queue is full, assignment change is kept in RAM only");
+	}
 }
 
 std::vector<std::uint8_t> AuxiliaryPreferredAssignmentNVSRepository::serialize(const std::vector<PersistedAssignmentRecord> &records)
@@ -602,7 +617,8 @@ bool AuxiliaryPreferredAssignmentNVSRepository::store(std::uint64_t virtualTermi
 	{
 		cache.push_back(updatedRecord);
 	}
-	return schedule_save_locked();
+	schedule_save_locked();
+	return true;
 }
 
 bool AuxiliaryPreferredAssignmentNVSRepository::remove(std::uint64_t virtualTerminalName, std::uint16_t functionObjectID)
@@ -622,7 +638,7 @@ bool AuxiliaryPreferredAssignmentNVSRepository::remove(std::uint64_t virtualTerm
 	            cache.end());
 	if (before != cache.size())
 	{
-		return schedule_save_locked();
+		schedule_save_locked();
 	}
 	return true;
 }
@@ -643,7 +659,7 @@ bool AuxiliaryPreferredAssignmentNVSRepository::clear(std::uint64_t virtualTermi
 	            cache.end());
 	if (before != cache.size())
 	{
-		return schedule_save_locked();
+		schedule_save_locked();
 	}
 	return true;
 }
